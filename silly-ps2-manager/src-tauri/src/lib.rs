@@ -106,11 +106,27 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
 
 // 2. RENOMBRADO Y ORGANIZACIÓN: Renombra a formato estándar ID.Título.iso
 #[tauri::command]
-fn fix_iso_filename(game_path: String, game_id: String, clean_title: String) -> Result<String, String> {
+fn fix_iso_filename(game_path: String, game_id: String) -> Result<String, String> {
     let current_path = PathBuf::from(&game_path);
-    let parent_dir = current_path.parent().ok_or("No se encontró directorio padre")?;
+    let parent_dir = current_path.parent().ok_or("No se encontró el directorio padre")?;
 
-    // Limpiar caracteres no válidos para FAT32 / exFAT
+    let file_stem = current_path
+        .file_stem()
+        .ok_or("Nombre de archivo inválido")?
+        .to_string_lossy();
+
+    // Regex para detectar si el serial ya está presente al inicio o con separadores
+    let serial_pattern = Regex::new(r"(?i)^(SLES|SLUS|SCES|SCUS|SLPM|SCPS|SLKA)[-_.](\d{3})[-_.](\d{2})[._\s-]*").unwrap();
+
+    // Extraemos solo el título limpio removiendo cualquier serial al inicio
+    let raw_title = serial_pattern.replace(&file_stem, "").to_string();
+    let clean_title = if raw_title.trim().is_empty() {
+        "Juego".to_string()
+    } else {
+        raw_title.trim().to_string()
+    };
+
+    // Sanitizar caracteres prohibidos en FAT32/exFAT
     let safe_title: String = clean_title
         .chars()
         .map(|c| match c {
@@ -119,8 +135,13 @@ fn fix_iso_filename(game_path: String, game_id: String, clean_title: String) -> 
         })
         .collect();
 
-    let new_file_name = format!("{}.{}.iso", game_id, safe_title.trim());
-    let new_path = parent_dir.join(&new_file_name);
+    let target_file_name = format!("{}.{}.iso", game_id, safe_title.trim());
+    let new_path = parent_dir.join(&target_file_name);
+
+    // Si ya tiene exactamente ese nombre, evitamos renombrar
+    if current_path == new_path {
+        return Ok("El archivo ya cumple con el formato estándar de OPL.".to_string());
+    }
 
     fs::rename(&current_path, &new_path).map_err(|e| e.to_string())?;
 

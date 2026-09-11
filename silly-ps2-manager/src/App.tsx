@@ -55,23 +55,30 @@ export default function App() {
     }
   };
 
-  // Renombrado al estándar OPL (ID.Titulo.iso)
-  const handleFixName = async (game: Ps2Game) => {
-    if (!oplPath || game.id === "DESCONOCIDO") return;
-    setStatusMsg(`Renombrando ${game.file_name}...`);
-    try {
-      await invoke("fix_iso_filename", {
-        gamePath: game.path,
-        gameId: game.id,
-        cleanTitle: game.title,
-      });
-      setStatusMsg(`Juego renombrado a estándar OPL.`);
-      refreshGames(oplPath);
-    } catch (err) {
-      setStatusMsg(String(err));
-    }
-  };
+  const isOplFormatted = (fileName: string, id: string) => {
+  return fileName.toLowerCase().startsWith(`${id.toLowerCase()}.`);
+};
 
+// Modificación dentro del componente:
+const handleFixName = async (game: Ps2Game) => {
+  if (!oplPath || game.id === "DESCONOCIDO") return;
+  if (isOplFormatted(game.file_name, game.id)) {
+    setStatusMsg("El archivo ya tiene el formato correcto.");
+    return;
+  }
+
+  setStatusMsg(`Renombrando ${game.file_name}...`);
+  try {
+    const msg = await invoke<string>("fix_iso_filename", {
+      gamePath: game.path,
+      gameId: game.id,
+    });
+    setStatusMsg(msg);
+    refreshGames(oplPath);
+  } catch (err) {
+    setStatusMsg(String(err));
+  }
+};
   // Generación de archivo .cfg
   const handleGenerateCfg = async (game: Ps2Game) => {
     if (!oplPath || game.id === "DESCONOCIDO") return;
