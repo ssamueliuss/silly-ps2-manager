@@ -88,8 +88,8 @@ export default function App() {
   };
 
   const stats = useMemo(() => {
-    const dvdGames = games.filter(g => g.media_type === "DVD");
-    const cdGames = games.filter(g => g.media_type === "CD");
+    const dvdGames = games.filter((g) => g.media_type === "DVD");
+    const cdGames = games.filter((g) => g.media_type === "CD");
     const totalSize = games.reduce((acc, g) => acc + g.size_gb, 0);
     return {
       dvdCount: dvdGames.length,
@@ -97,36 +97,86 @@ export default function App() {
       cdCount: cdGames.length,
       cdSize: cdGames.reduce((acc, g) => acc + g.size_gb, 0).toFixed(2),
       totalCount: games.length,
-      totalSize: totalSize.toFixed(2)
+      totalSize: totalSize.toFixed(2),
     };
   }, [games]);
 
   return (
-    // Se añade overflow: hidden al root para evitar scroll general
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", fontFamily: "system-ui, sans-serif", backgroundColor: "#f8fafc", color: "#1e293b" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100vh",
+        overflow: "hidden",
+        fontFamily: "system-ui, sans-serif",
+        backgroundColor: "#F5F1E8",
+        color: "#2B262C",
+        boxSizing: "border-box",
+      }}
+    >
       <Toaster richColors position="bottom-right" />
 
-      <header style={{ backgroundColor: "#ffffff", borderBottom: "1px solid #e2e8f0", padding: "8px 16px", display: "flex", gap: 16, fontSize: 13, fontWeight: 500, flexShrink: 0 }}>
-        <div style={{ cursor: "pointer", color: "#6b21a8" }} onClick={handleSelectFolder}>Open OPL folder</div>
-        <div style={{ cursor: "pointer", color: "#475569" }}>Batch Actions</div>
-        <div style={{ cursor: "pointer", color: "#475569" }}>Settings</div>
+      {/* Menú superior */}
+      <header
+        style={{
+          backgroundColor: "#FFFFFF",
+          borderBottom: "1px solid #EAE4D8",
+          padding: "8px 16px",
+          display: "flex",
+          gap: 16,
+          fontSize: 13,
+          fontWeight: 500,
+          flexShrink: 0,
+        }}
+      >
+        <div
+          style={{ cursor: "pointer", color: "#2B262C", fontWeight: 700 }}
+          onClick={handleSelectFolder}
+        >
+          Open OPL folder
+        </div>
+        <div style={{ cursor: "pointer", color: "#766F78" }}>Batch Actions</div>
+        <div style={{ cursor: "pointer", color: "#766F78" }}>Settings</div>
       </header>
 
-      {/* El minHeight: 0 es crucial para que flex: 1 no se expanda más allá de la pantalla */}
+      {/* Contenedor principal */}
       <main style={{ display: "flex", flex: 1, overflow: "hidden", minHeight: 0 }}>
-        
-        {/* Columna Izquierda */}
-        <div style={{ flex: "0 0 65%", borderRight: "1px solid #e2e8f0", display: "flex", flexDirection: "column", backgroundColor: "#ffffff", minHeight: 0 }}>
-          {/* Contenedor escrolleable de la tabla */}
+        {/* Columna Izquierda: Tabla */}
+        <div
+          style={{
+            flex: "0 0 65%",
+            borderRight: "1px solid #EAE4D8",
+            display: "flex",
+            flexDirection: "column",
+            backgroundColor: "#FFFFFF",
+            minHeight: 0,
+          }}
+        >
           <div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 13, userSelect: "none" }}>
-              <thead style={{ position: "sticky", top: 0, backgroundColor: "#f1f5f9", zIndex: 1, boxShadow: "0 1px 2px rgba(0,0,0,0.05)" }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                textAlign: "left",
+                fontSize: 13,
+                userSelect: "none",
+              }}
+            >
+              <thead
+                style={{
+                  position: "sticky",
+                  top: 0,
+                  backgroundColor: "#EAE4D8",
+                  zIndex: 1,
+                  boxShadow: "0 1px 2px rgba(43, 38, 44, 0.05)",
+                }}
+              >
                 <tr>
-                  <th style={{ padding: "6px 12px", borderRight: "1px solid #e2e8f0", color: "#4c1d95", fontWeight: 600 }}>Title</th>
-                  <th style={{ padding: "6px 12px", borderRight: "1px solid #e2e8f0", color: "#4c1d95", fontWeight: 600 }}>ID</th>
-                  <th style={{ padding: "6px 12px", borderRight: "1px solid #e2e8f0", color: "#4c1d95", fontWeight: 600 }}>Type</th>
-                  <th style={{ padding: "6px 12px", borderRight: "1px solid #e2e8f0", color: "#4c1d95", fontWeight: 600 }}>Size</th>
-                  <th style={{ padding: "6px 12px", color: "#4c1d95", fontWeight: 600 }}>Format</th>
+                  <th style={{ padding: "6px 12px", borderRight: "1px solid #DCD5C8", color: "#2B262C", fontWeight: 700 }}>Title</th>
+                  <th style={{ padding: "6px 12px", borderRight: "1px solid #DCD5C8", color: "#2B262C", fontWeight: 700 }}>ID</th>
+                  <th style={{ padding: "6px 12px", borderRight: "1px solid #DCD5C8", color: "#2B262C", fontWeight: 700 }}>Type</th>
+                  <th style={{ padding: "6px 12px", borderRight: "1px solid #DCD5C8", color: "#2B262C", fontWeight: 700 }}>Size</th>
+                  <th style={{ padding: "6px 12px", color: "#2B262C", fontWeight: 700 }}>Format</th>
                 </tr>
               </thead>
               <tbody>
@@ -134,107 +184,287 @@ export default function App() {
                   const isSelected = selectedGame?.id === g.id;
                   const formatted = isOplFormatted(g.file_name, g.id);
                   return (
-                    <tr 
-                      key={g.path} 
+                    <tr
+                      key={g.path}
                       onClick={() => setSelectedGame(g)}
-                      style={{ 
-                        borderBottom: "1px solid #edf2f7", 
-                        backgroundColor: isSelected ? "#f3e8ff" : "transparent",
+                      style={{
+                        borderBottom: "1px solid #F5F1E8",
+                        backgroundColor: isSelected ? "#EAE4D8" : "transparent",
+                        color: isSelected ? "#2B262C" : "inherit",
                         cursor: "pointer",
                       }}
                     >
-                      <td style={{ padding: "4px 12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 200 }}>
+                      <td
+                        style={{
+                          padding: "4px 12px",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          maxWidth: 200,
+                          fontWeight: isSelected ? 600 : 400,
+                        }}
+                      >
                         {g.title}
                       </td>
-                      <td style={{ padding: "4px 12px" }}>{g.id}</td>
+                      <td style={{ padding: "4px 12px", fontFamily: "monospace", fontWeight: isSelected ? 700 : 500 }}>
+                        {g.id}
+                      </td>
                       <td style={{ padding: "4px 12px" }}>PS2</td>
                       <td style={{ padding: "4px 12px" }}>{g.size_gb} GB</td>
-                      <td style={{ padding: "4px 12px", color: formatted ? "#16a34a" : "#dc2626" }}>
-                        {g.media_type} {formatted && "✓"}
+                      <td
+                        style={{
+                          padding: "4px 12px",
+                          color: formatted ? "#2B262C" : "#9C3D3D",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {g.media_type} {formatted ? "✓" : "✗"}
                       </td>
                     </tr>
                   );
                 })}
-                {loading && <tr><td colSpan={5} style={{ padding: 12, textAlign: "center" }}>Escaneando...</td></tr>}
+                {loading && (
+                  <tr>
+                    <td colSpan={5} style={{ padding: 12, textAlign: "center", color: "#2B262C" }}>
+                      Escaneando...
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
 
-        {/* Columna Derecha */}
-        <div style={{ flex: "0 0 35%", padding: "16px", overflowY: "auto", backgroundColor: "#f8fafc", display: "flex", flexDirection: "column", gap: 16 }}>
-          
-          <fieldset style={{ border: "1px solid #cbd5e1", borderRadius: 6, padding: "12px", backgroundColor: "#ffffff" }}>
-            <legend style={{ fontSize: 12, fontWeight: 600, color: "#6b21a8", padding: "0 4px" }}>Game Details</legend>
+        {/* Columna Derecha: Panel de Control */}
+        <div
+          style={{
+            flex: "0 0 35%",
+            padding: "16px",
+            boxSizing: "border-box",
+            overflowY: "auto",
+            backgroundColor: "#F5F1E8",
+            display: "flex",
+            flexDirection: "column",
+            gap: 16,
+            minHeight: 0,
+          }}
+        >
+          {/* Detalles del Juego */}
+          <fieldset
+            style={{
+              border: "1px solid #DCD5C8",
+              borderRadius: 6,
+              padding: "12px",
+              backgroundColor: "#FFFFFF",
+              margin: 0,
+              boxSizing: "border-box",
+              width: "100%",
+            }}
+          >
+            <legend style={{ fontSize: 12, fontWeight: 700, color: "#2B262C", padding: "0 6px" }}>
+              Game Details
+            </legend>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
               <div style={{ display: "flex", alignItems: "center" }}>
-                <span style={{ width: 40, fontWeight: 500 }}>Title:</span>
-                <input readOnly value={selectedGame?.title || ""} style={{ flex: 1, padding: "4px 8px", border: "1px solid #e2e8f0", borderRadius: 4, backgroundColor: "#f8fafc" }} />
+                <span style={{ width: 44, fontWeight: 600, color: "#2B262C" }}>Title:</span>
+                <input
+                  readOnly
+                  value={selectedGame?.title || ""}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: "4px 8px",
+                    border: "1px solid #DCD5C8",
+                    borderRadius: 4,
+                    backgroundColor: "#F5F1E8",
+                    color: "#2B262C",
+                    boxSizing: "border-box",
+                  }}
+                />
               </div>
               <div style={{ display: "flex", alignItems: "center" }}>
-                <span style={{ width: 40, fontWeight: 500 }}>Path:</span>
-                <input readOnly value={selectedGame?.path || ""} style={{ flex: 1, padding: "4px 8px", border: "1px solid #e2e8f0", borderRadius: 4, backgroundColor: "#f8fafc" }} />
+                <span style={{ width: 44, fontWeight: 600, color: "#2B262C" }}>Path:</span>
+                <input
+                  readOnly
+                  value={selectedGame?.path || ""}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: "4px 8px",
+                    border: "1px solid #DCD5C8",
+                    borderRadius: 4,
+                    backgroundColor: "#F5F1E8",
+                    color: "#2B262C",
+                    boxSizing: "border-box",
+                  }}
+                />
               </div>
               <div style={{ display: "flex", alignItems: "center" }}>
-                <span style={{ width: 40, fontWeight: 500 }}>ID:</span>
-                <input readOnly value={selectedGame?.id || ""} style={{ width: 120, padding: "4px 8px", border: "1px solid #e2e8f0", borderRadius: 4, backgroundColor: "#f8fafc", fontFamily: "monospace" }} />
+                <span style={{ width: 44, fontWeight: 600, color: "#2B262C" }}>ID:</span>
+                <input
+                  readOnly
+                  value={selectedGame?.id || ""}
+                  style={{
+                    width: 130,
+                    padding: "4px 8px",
+                    border: "1px solid #DCD5C8",
+                    borderRadius: 4,
+                    backgroundColor: "#F5F1E8",
+                    fontFamily: "monospace",
+                    color: "#2B262C",
+                    fontWeight: 600,
+                    boxSizing: "border-box",
+                  }}
+                />
               </div>
             </div>
           </fieldset>
 
-          <fieldset style={{ border: "1px solid #cbd5e1", borderRadius: 6, padding: "12px", backgroundColor: "#ffffff" }}>
-            <legend style={{ fontSize: 12, fontWeight: 600, color: "#6b21a8", padding: "0 4px" }}>Operations</legend>
+          {/* Operaciones */}
+          <fieldset
+            style={{
+              border: "1px solid #DCD5C8",
+              borderRadius: 6,
+              padding: "12px",
+              backgroundColor: "#FFFFFF",
+              margin: 0,
+              boxSizing: "border-box",
+              width: "100%",
+            }}
+          >
+            <legend style={{ fontSize: 12, fontWeight: 700, color: "#2B262C", padding: "0 6px" }}>
+              Operations
+            </legend>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <button 
-                onClick={handleFixName} 
+              <button
+                onClick={handleFixName}
                 disabled={!selectedGame || (selectedGame && isOplFormatted(selectedGame.file_name, selectedGame.id))}
-                style={{ padding: 8, border: "1px solid #d8b4fe", borderRadius: 4, backgroundColor: "#f3e8ff", color: "#6b21a8", cursor: selectedGame ? "pointer" : "default", opacity: selectedGame ? 1 : 0.5, fontWeight: 500 }}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: 8,
+                  border: "1px solid #2B262C",
+                  borderRadius: 4,
+                  backgroundColor:
+                    selectedGame && !isOplFormatted(selectedGame.file_name, selectedGame.id)
+                      ? "#2B262C"
+                      : "#EAE4D8",
+                  color:
+                    selectedGame && !isOplFormatted(selectedGame.file_name, selectedGame.id)
+                      ? "#F5F1E8"
+                      : "#8A848D",
+                  cursor:
+                    selectedGame && !isOplFormatted(selectedGame.file_name, selectedGame.id)
+                      ? "pointer"
+                      : "default",
+                  fontWeight: 600,
+                }}
               >
                 Rename (Format OPL)
               </button>
-              <button 
-                onClick={handleGenerateCfg} 
+              <button
+                onClick={handleGenerateCfg}
                 disabled={!selectedGame}
-                style={{ padding: 8, border: "1px solid #d8b4fe", borderRadius: 4, backgroundColor: "#f3e8ff", color: "#6b21a8", cursor: selectedGame ? "pointer" : "default", opacity: selectedGame ? 1 : 0.5, fontWeight: 500 }}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: 8,
+                  border: "1px solid #2B262C",
+                  borderRadius: 4,
+                  backgroundColor: selectedGame ? "#F5F1E8" : "#EAE4D8",
+                  color: selectedGame ? "#2B262C" : "#8A848D",
+                  cursor: selectedGame ? "pointer" : "default",
+                  fontWeight: 600,
+                }}
               >
                 Edit / Create CFG
               </button>
-              <button 
-                onClick={handleDownloadArt} 
+              <button
+                onClick={handleDownloadArt}
                 disabled={!selectedGame}
-                style={{ padding: 8, border: "1px solid #d8b4fe", borderRadius: 4, backgroundColor: "#f3e8ff", color: "#6b21a8", cursor: selectedGame ? "pointer" : "default", opacity: selectedGame ? 1 : 0.5, fontWeight: 500 }}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: 8,
+                  border: "1px solid #2B262C",
+                  borderRadius: 4,
+                  backgroundColor: selectedGame ? "#F5F1E8" : "#EAE4D8",
+                  color: selectedGame ? "#2B262C" : "#8A848D",
+                  cursor: selectedGame ? "pointer" : "default",
+                  fontWeight: 600,
+                }}
               >
                 Manage ARTs (Download)
               </button>
             </div>
           </fieldset>
 
-          <fieldset style={{ border: "1px solid #cbd5e1", borderRadius: 6, padding: "12px", backgroundColor: "#ffffff", marginTop: "auto" }}>
-            <legend style={{ fontSize: 12, fontWeight: 600, color: "#6b21a8", padding: "0 4px" }}>Global Stats</legend>
+          {/* Estadísticas Globales */}
+          <fieldset
+            style={{
+              border: "1px solid #DCD5C8",
+              borderRadius: 6,
+              padding: "12px",
+              backgroundColor: "#FFFFFF",
+              margin: 0,
+              marginTop: "auto",
+              boxSizing: "border-box",
+              width: "100%",
+            }}
+          >
+            <legend style={{ fontSize: 12, fontWeight: 700, color: "#2B262C", padding: "0 6px" }}>
+              Global Stats
+            </legend>
             <table style={{ width: "100%", fontSize: 13, textAlign: "right" }}>
               <thead>
-                <tr style={{ color: "#64748b" }}>
-                  <th style={{ textAlign: "left", fontWeight: 500 }}>Type</th>
-                  <th style={{ fontWeight: 500 }}>Count</th>
-                  <th style={{ fontWeight: 500 }}>Size</th>
+                <tr style={{ color: "#766F78" }}>
+                  <th style={{ textAlign: "left", fontWeight: 600 }}>Type</th>
+                  <th style={{ fontWeight: 600 }}>Count</th>
+                  <th style={{ fontWeight: 600 }}>Size</th>
                 </tr>
               </thead>
               <tbody>
-                <tr><td style={{ textAlign: "left" }}>PS2 (DVD)</td><td>{stats.dvdCount}</td><td>{stats.dvdSize} GB</td></tr>
-                <tr><td style={{ textAlign: "left" }}>PS2 (CD)</td><td>{stats.cdCount}</td><td>{stats.cdSize} GB</td></tr>
-                <tr style={{ fontWeight: 600, borderTop: "1px solid #e2e8f0" }}>
-                  <td style={{ textAlign: "left", paddingTop: 4 }}>Total</td>
-                  <td style={{ paddingTop: 4 }}>{stats.totalCount}</td>
-                  <td style={{ paddingTop: 4 }}>{stats.totalSize} GB</td>
+                <tr>
+                  <td style={{ textAlign: "left" }}>PS2 (DVD)</td>
+                  <td>{stats.dvdCount}</td>
+                  <td>{stats.dvdSize} GB</td>
+                </tr>
+                <tr>
+                  <td style={{ textAlign: "left" }}>PS2 (CD)</td>
+                  <td>{stats.cdCount}</td>
+                  <td>{stats.cdSize} GB</td>
+                </tr>
+                <tr
+                  style={{
+                    fontWeight: 700,
+                    borderTop: "1px solid #DCD5C8",
+                    color: "#2B262C",
+                  }}
+                >
+                  <td style={{ textAlign: "left", paddingTop: 6 }}>Total</td>
+                  <td style={{ paddingTop: 6 }}>{stats.totalCount}</td>
+                  <td style={{ paddingTop: 6 }}>{stats.totalSize} GB</td>
                 </tr>
               </tbody>
             </table>
           </fieldset>
-          
         </div>
       </main>
-      
-      <footer style={{ backgroundColor: "#f1f5f9", borderTop: "1px solid #e2e8f0", padding: "4px 16px", fontSize: 11, color: "#64748b", display: "flex", justifyContent: "space-between", flexShrink: 0 }}>
+
+      {/* Barra de Estado Inferior */}
+      <footer
+        style={{
+          backgroundColor: "#EAE4D8",
+          borderTop: "1px solid #DCD5C8",
+          padding: "4px 16px",
+          fontSize: 11,
+          color: "#2B262C",
+          display: "flex",
+          justifyContent: "space-between",
+          flexShrink: 0,
+          fontWeight: 500,
+        }}
+      >
         <span>{oplPath ? `Ruta activa: ${oplPath}` : "Esperando directorio..."}</span>
         <span>Modo: Local / USB</span>
       </footer>

@@ -71,7 +71,7 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
     Ok(games)
 }
 
-// 1. GESTIÓN DE CARÁTULAS Y ARTE: Descarga COV desde repositorios abiertos de OPL
+// 1. GESTIÓN DE CARÁTULAS Y ARTE: Descarga desde xlenore/ps2-covers por Game ID
 #[tauri::command]
 fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
     let base = PathBuf::from(&opl_path);
@@ -80,27 +80,42 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
         fs::create_dir_all(&art_dir).map_err(|e| e.to_string())?;
     }
 
-    // Repositorio habitual de carátulas OPL por serial
-    let cover_url = format!(
-        "https://raw.githubusercontent.com/PS2-OPL-Customs/OPL-Artwork/master/Art/{}_COV.jpg",
-        game_id
-    );
+    // Convertir formato OPL (SLES_533.83) al formato del repositorio (SLES-53383)
+    let clean_id = game_id.replace('_', "-").replace('.', "");
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("SillyPS2Manager/1.0")
         .build()
         .map_err(|e| e.to_string())?;
 
-    let response = client.get(&cover_url).send().map_err(|e| e.to_string())?;
+    let target_file_path = art_dir.join(format!("{}_COV.jpg", game_id));
+    let mut downloaded = false;
 
-    if response.status().is_success() {
-        let bytes = response.bytes().map_err(|e| e.to_string())?;
-        let output_path = art_dir.join(format!("{}_COV.jpg", game_id));
-        let mut file = File::create(output_path).map_err(|e| e.to_string())?;
-        file.write_all(&bytes).map_err(|e| e.to_string())?;
-        Ok("Carátula descargada con éxito".into())
+    // URLs directas a los archivos raw de GitHub (probamos 2D y 3D)
+    let urls = [
+        format!("https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/{}.jpg", clean_id),
+        format!("https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/3d/{}.jpg", clean_id),
+    ];
+
+    for url in urls {
+        if let Ok(res) = client.get(&url).send() {
+            if res.status().is_success() {
+                if let Ok(bytes) = res.bytes() {
+                    if let Ok(mut file) = File::create(&target_file_path) {
+                        if file.write_all(&bytes).is_ok() {
+                            downloaded = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if downloaded {
+        Ok(format!("Carátula descargada con éxito en /ART/{}_COV.jpg", game_id))
     } else {
-        Err(format!("No se encontró carátula para el serial {}", game_id))
+        Err(format!("No se encontró carátula para el serial {} en el repositorio", clean_id))
     }
 }
 
