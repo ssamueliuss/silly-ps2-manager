@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { Toaster, toast } from "sonner";
@@ -10,6 +10,7 @@ interface Ps2Game {
   path: string;
   size_gb: number;
   media_type: string;
+  has_cover: boolean;
 }
 
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
   const [games, setGames] = useState<Ps2Game[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedGame, setSelectedGame] = useState<Ps2Game | null>(null);
+  const [coverUrl, setCoverUrl] = useState<string | null>(null);
 
   const isOplFormatted = (fileName: string, id: string) => {
     return fileName.toLowerCase().startsWith(`${id.toLowerCase()}.`);
@@ -24,10 +26,14 @@ export default function App() {
 
   const refreshGames = async (path: string) => {
     setLoading(true);
-    setSelectedGame(null);
     try {
       const result = await invoke<Ps2Game[]>("scan_opl_folder", { oplPath: path });
       setGames(result);
+      // Mantener seleccionado el juego actual si aún existe
+      if (selectedGame) {
+        const stillExists = result.find((g) => g.id === selectedGame.id);
+        if (stillExists) setSelectedGame(stillExists);
+      }
     } catch (err) {
       toast.error("Error al escanear directorio", { description: String(err) });
     } finally {
@@ -44,10 +50,30 @@ export default function App() {
 
     if (typeof selected === "string") {
       setOplPath(selected);
+      setSelectedGame(null);
       toast.info("Directorio cargado", { description: selected });
       refreshGames(selected);
     }
   };
+
+  const loadCover = async (gameId: string) => {
+    if (!oplPath) return;
+    try {
+      const bytes = await invoke<number[]>("get_cover_image", { oplPath, gameId });
+      const blob = new Blob([new Uint8Array(bytes)], { type: "image/jpeg" });
+      setCoverUrl(URL.createObjectURL(blob));
+    } catch {
+      setCoverUrl(null);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedGame) {
+      loadCover(selectedGame.id);
+    } else {
+      setCoverUrl(null);
+    }
+  }, [selectedGame]);
 
   const handleDownloadArt = async () => {
     if (!oplPath || !selectedGame) return;
@@ -55,6 +81,8 @@ export default function App() {
     try {
       const msg = await invoke<string>("download_art", { oplPath, gameId: selectedGame.id });
       toast.success(msg, { id: toastId });
+      loadCover(selectedGame.id);
+      refreshGames(oplPath); // Actualiza la columna Cover en la tabla
     } catch (err) {
       toast.error("Error", { id: toastId, description: String(err) });
     }
@@ -176,7 +204,8 @@ export default function App() {
                   <th style={{ padding: "6px 12px", borderRight: "1px solid #DCD5C8", color: "#2B262C", fontWeight: 700 }}>ID</th>
                   <th style={{ padding: "6px 12px", borderRight: "1px solid #DCD5C8", color: "#2B262C", fontWeight: 700 }}>Type</th>
                   <th style={{ padding: "6px 12px", borderRight: "1px solid #DCD5C8", color: "#2B262C", fontWeight: 700 }}>Size</th>
-                  <th style={{ padding: "6px 12px", color: "#2B262C", fontWeight: 700 }}>Format</th>
+                  <th style={{ padding: "6px 12px", borderRight: "1px solid #DCD5C8", color: "#2B262C", fontWeight: 700 }}>Format</th>
+                  <th style={{ padding: "6px 12px", color: "#2B262C", fontWeight: 700 }}>Cover</th>
                 </tr>
               </thead>
               <tbody>
@@ -200,7 +229,7 @@ export default function App() {
                           whiteSpace: "nowrap",
                           overflow: "hidden",
                           textOverflow: "ellipsis",
-                          maxWidth: 200,
+                          maxWidth: 220,
                           fontWeight: isSelected ? 600 : 400,
                         }}
                       >
@@ -220,12 +249,21 @@ export default function App() {
                       >
                         {g.media_type} {formatted ? "✓" : "✗"}
                       </td>
+                      <td
+                        style={{
+                          padding: "4px 12px",
+                          fontWeight: 600,
+                          color: g.has_cover ? "#2B262C" : "#8A848D",
+                        }}
+                      >
+                        {g.has_cover ? "Yes" : "No"}
+                      </td>
                     </tr>
                   );
                 })}
                 {loading && (
                   <tr>
-                    <td colSpan={5} style={{ padding: 12, textAlign: "center", color: "#2B262C" }}>
+                    <td colSpan={6} style={{ padding: 12, textAlign: "center", color: "#2B262C" }}>
                       Escaneando...
                     </td>
                   </tr>
@@ -249,7 +287,7 @@ export default function App() {
             minHeight: 0,
           }}
         >
-          {/* Detalles del Juego */}
+          {/* Detalles del Juego con Previsualización */}
           <fieldset
             style={{
               border: "1px solid #DCD5C8",
@@ -264,58 +302,84 @@ export default function App() {
             <legend style={{ fontSize: 12, fontWeight: 700, color: "#2B262C", padding: "0 6px" }}>
               Game Details
             </legend>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
-              <div style={{ display: "flex", alignItems: "center" }}>
-                <span style={{ width: 44, fontWeight: 600, color: "#2B262C" }}>Title:</span>
-                <input
-                  readOnly
-                  value={selectedGame?.title || ""}
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    padding: "4px 8px",
-                    border: "1px solid #DCD5C8",
-                    borderRadius: 4,
-                    backgroundColor: "#F5F1E8",
-                    color: "#2B262C",
-                    boxSizing: "border-box",
-                  }}
-                />
+            
+            <div style={{ display: "flex", gap: 16 }}>
+              {/* Visor de Carátula */}
+              <div
+                style={{
+                  width: 85,
+                  height: 120,
+                  backgroundColor: "#EAE4D8",
+                  border: "1px solid #DCD5C8",
+                  borderRadius: 4,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                  overflow: "hidden",
+                }}
+              >
+                {coverUrl ? (
+                  <img src={coverUrl} alt="Cover" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                ) : (
+                  <span style={{ color: "#8A848D", fontSize: 28, fontWeight: 700 }}>?</span>
+                )}
               </div>
-              <div style={{ display: "flex", alignItems: "center" }}>
-                <span style={{ width: 44, fontWeight: 600, color: "#2B262C" }}>Path:</span>
-                <input
-                  readOnly
-                  value={selectedGame?.path || ""}
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    padding: "4px 8px",
-                    border: "1px solid #DCD5C8",
-                    borderRadius: 4,
-                    backgroundColor: "#F5F1E8",
-                    color: "#2B262C",
-                    boxSizing: "border-box",
-                  }}
-                />
-              </div>
-              <div style={{ display: "flex", alignItems: "center" }}>
-                <span style={{ width: 44, fontWeight: 600, color: "#2B262C" }}>ID:</span>
-                <input
-                  readOnly
-                  value={selectedGame?.id || ""}
-                  style={{
-                    width: 130,
-                    padding: "4px 8px",
-                    border: "1px solid #DCD5C8",
-                    borderRadius: 4,
-                    backgroundColor: "#F5F1E8",
-                    fontFamily: "monospace",
-                    color: "#2B262C",
-                    fontWeight: 600,
-                    boxSizing: "border-box",
-                  }}
-                />
+
+              {/* Text Inputs */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13, flex: 1, justifyContent: "center" }}>
+                <div style={{ display: "flex", alignItems: "center" }}>
+                  <span style={{ width: 44, fontWeight: 600, color: "#2B262C" }}>Title:</span>
+                  <input
+                    readOnly
+                    value={selectedGame?.title || ""}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      padding: "4px 8px",
+                      border: "1px solid #DCD5C8",
+                      borderRadius: 4,
+                      backgroundColor: "#F5F1E8",
+                      color: "#2B262C",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+                <div style={{ display: "flex", alignItems: "center" }}>
+                  <span style={{ width: 44, fontWeight: 600, color: "#2B262C" }}>Path:</span>
+                  <input
+                    readOnly
+                    value={selectedGame?.path || ""}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      padding: "4px 8px",
+                      border: "1px solid #DCD5C8",
+                      borderRadius: 4,
+                      backgroundColor: "#F5F1E8",
+                      color: "#2B262C",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+                <div style={{ display: "flex", alignItems: "center" }}>
+                  <span style={{ width: 44, fontWeight: 600, color: "#2B262C" }}>ID:</span>
+                  <input
+                    readOnly
+                    value={selectedGame?.id || ""}
+                    style={{
+                      width: 130,
+                      padding: "4px 8px",
+                      border: "1px solid #DCD5C8",
+                      borderRadius: 4,
+                      backgroundColor: "#F5F1E8",
+                      fontFamily: "monospace",
+                      color: "#2B262C",
+                      fontWeight: 600,
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </fieldset>

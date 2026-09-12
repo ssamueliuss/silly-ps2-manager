@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "silly-ps2-manager",
-        "width": 800,
-        "height": 600
+        "title": "Silly PS2 Manager | by Samuel Antunez (sillydevs.vercel.app)",
+        "width": 1090,
+        "height": 690,
+        "minWidth": 1090,
+        "minHeight": 690,
+        "resizable": true
       }
     ],
     "security": {

@@ -12,6 +12,7 @@ pub struct Ps2Game {
     pub path: String,
     pub size_gb: f64,
     pub media_type: String,
+    pub has_cover: bool,
 }
 
 // Extrae el Game ID (ej. SLES_533.83) de la cabecera de la ISO
@@ -37,7 +38,10 @@ fn extract_game_id(path: &Path) -> Option<String> {
 #[tauri::command]
 fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
     let base = PathBuf::from(&opl_path);
+    let art_dir = base.join("ART");
     let mut games = Vec::new();
+
+    let serial_cleanup_re = Regex::new(r"(?i)^(SLES|SLUS|SCES|SCUS|SLPM|SCPS|SLKA)[-_.](\d{3})[-_.](\d{2})[._\s-]*").unwrap();
 
     for subfolder in ["DVD", "CD"] {
         let dir_path = base.join(subfolder);
@@ -52,7 +56,19 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
                             let size_gb = (metadata.len() as f64) / (1024.0 * 1024.0 * 1024.0);
 
                             let id = extract_game_id(&file_path).unwrap_or_else(|| "DESCONOCIDO".to_string());
-                            let title = file_name.replace(".iso", "").replace(".ISO", "");
+                            
+                            // Limpiar el serial del inicio para mostrar solo el título limpio
+                            let raw_stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
+                            let clean_title = serial_cleanup_re.replace(&raw_stem, "").trim().to_string();
+                            let title = if clean_title.is_empty() {
+                                raw_stem.to_string()
+                            } else {
+                                clean_title
+                            };
+
+                            // Verificar si existe la carátula en la carpeta ART
+                            let has_cover = art_dir.join(format!("{}_COV.jpg", id)).exists()
+                                || art_dir.join(format!("{}_COV.png", id)).exists();
 
                             games.push(Ps2Game {
                                 id,
@@ -61,6 +77,7 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
                                 path: file_path.to_string_lossy().to_string(),
                                 size_gb: (size_gb * 100.0).round() / 100.0,
                                 media_type: subfolder.to_string(),
+                                has_cover,
                             });
                         }
                     }
@@ -80,7 +97,6 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
         fs::create_dir_all(&art_dir).map_err(|e| e.to_string())?;
     }
 
-    // Convertir formato OPL (SLES_533.83) al formato del repositorio (SLES-53383)
     let clean_id = game_id.replace('_', "-").replace('.', "");
 
     let client = reqwest::blocking::Client::builder()
@@ -91,7 +107,6 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
     let target_file_path = art_dir.join(format!("{}_COV.jpg", game_id));
     let mut downloaded = false;
 
-    // URLs directas a los archivos raw de GitHub (probamos 2D y 3D)
     let urls = [
         format!("https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/{}.jpg", clean_id),
         format!("https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/3d/{}.jpg", clean_id),
@@ -130,10 +145,8 @@ fn fix_iso_filename(game_path: String, game_id: String) -> Result<String, String
         .ok_or("Nombre de archivo inválido")?
         .to_string_lossy();
 
-    // Regex para detectar si el serial ya está presente al inicio o con separadores
     let serial_pattern = Regex::new(r"(?i)^(SLES|SLUS|SCES|SCUS|SLPM|SCPS|SLKA)[-_.](\d{3})[-_.](\d{2})[._\s-]*").unwrap();
 
-    // Extraemos solo el título limpio removiendo cualquier serial al inicio
     let raw_title = serial_pattern.replace(&file_stem, "").to_string();
     let clean_title = if raw_title.trim().is_empty() {
         "Juego".to_string()
@@ -141,7 +154,6 @@ fn fix_iso_filename(game_path: String, game_id: String) -> Result<String, String
         raw_title.trim().to_string()
     };
 
-    // Sanitizar caracteres prohibidos en FAT32/exFAT
     let safe_title: String = clean_title
         .chars()
         .map(|c| match c {
@@ -153,7 +165,6 @@ fn fix_iso_filename(game_path: String, game_id: String) -> Result<String, String
     let target_file_name = format!("{}.{}.iso", game_id, safe_title.trim());
     let new_path = parent_dir.join(&target_file_name);
 
-    // Si ya tiene exactamente ese nombre, evitamos renombrar
     if current_path == new_path {
         return Ok("El archivo ya cumple con el formato estándar de OPL.".to_string());
     }
@@ -181,7 +192,6 @@ fn save_game_cfg(
     let cfg_path = cfg_dir.join(format!("{}.cfg", game_id));
     let mut file = File::create(cfg_path).map_err(|e| e.to_string())?;
 
-    // Formato estándar que lee OPL en CFG
     let mut content = format!("CfgVersion=1\nTitle={}\n", title);
     if !dma_mode.is_empty() {
         content.push_str(&format!("$DMA={}\n", dma_mode));
@@ -194,6 +204,22 @@ fn save_game_cfg(
     Ok("Archivo .cfg guardado correctamente".into())
 }
 
+// 4. LECTOR DE CARÁTULAS: Lee la imagen local y la envía al frontend en bytes
+#[tauri::command]
+fn get_cover_image(opl_path: String, game_id: String) -> Result<Vec<u8>, String> {
+    let art_dir = PathBuf::from(opl_path).join("ART");
+    let jpg_path = art_dir.join(format!("{}_COV.jpg", game_id));
+    let png_path = art_dir.join(format!("{}_COV.png", game_id));
+
+    if jpg_path.exists() {
+        fs::read(jpg_path).map_err(|e| e.to_string())
+    } else if png_path.exists() {
+        fs::read(png_path).map_err(|e| e.to_string())
+    } else {
+        Err("No existe imagen de carátula".into())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -203,7 +229,8 @@ pub fn run() {
             scan_opl_folder,
             download_art,
             fix_iso_filename,
-            save_game_cfg
+            save_game_cfg,
+            get_cover_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
