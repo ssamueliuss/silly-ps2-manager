@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Emitter};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Ps2Game {
@@ -13,6 +14,14 @@ pub struct Ps2Game {
     pub size_gb: f64,
     pub media_type: String,
     pub has_cover: bool,
+}
+
+#[derive(Serialize, Clone)]
+pub struct BatchProgressPayload {
+    pub current: usize,
+    pub total: usize,
+    pub game_title: String,
+    pub action: String,
 }
 
 // Extrae el Game ID (ej. SLES_533.83) de la cabecera de la ISO
@@ -57,7 +66,6 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
 
                             let id = extract_game_id(&file_path).unwrap_or_else(|| "DESCONOCIDO".to_string());
                             
-                            // Limpiar el serial del inicio para mostrar solo el título limpio
                             let raw_stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
                             let clean_title = serial_cleanup_re.replace(&raw_stem, "").trim().to_string();
                             let title = if clean_title.is_empty() {
@@ -66,7 +74,6 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
                                 clean_title
                             };
 
-                            // Verificar si existe la carátula en la carpeta ART
                             let has_cover = art_dir.join(format!("{}_COV.jpg", id)).exists()
                                 || art_dir.join(format!("{}_COV.png", id)).exists();
 
@@ -88,7 +95,7 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
     Ok(games)
 }
 
-// 1. GESTIÓN DE CARÁTULAS Y ARTE: Descarga desde xlenore/ps2-covers por Game ID
+// 1. GESTIÓN DE CARÁTULAS Y ARTE
 #[tauri::command]
 fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
     let base = PathBuf::from(&opl_path);
@@ -98,9 +105,11 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
     }
 
     let clean_id = game_id.replace('_', "-").replace('.', "");
+    println!("[DEBUG] Buscando carátula para ID limpio: {}", clean_id);
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("SillyPS2Manager/1.0")
+        .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -113,12 +122,15 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
     ];
 
     for url in urls {
+        println!("[DEBUG] Probando URL: {}", url);
         if let Ok(res) = client.get(&url).send() {
+            println!("[DEBUG] Respuesta status: {}", res.status());
             if res.status().is_success() {
                 if let Ok(bytes) = res.bytes() {
                     if let Ok(mut file) = File::create(&target_file_path) {
                         if file.write_all(&bytes).is_ok() {
                             downloaded = true;
+                            println!("[DEBUG] ¡Carátula descargada con éxito!");
                             break;
                         }
                     }
@@ -130,11 +142,11 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
     if downloaded {
         Ok(format!("Carátula descargada con éxito en /ART/{}_COV.jpg", game_id))
     } else {
-        Err(format!("No se encontró carátula para el serial {} en el repositorio", clean_id))
+        Err(format!("No se encontró carátula para {}", clean_id))
     }
 }
 
-// 2. RENOMBRADO Y ORGANIZACIÓN: Renombra a formato estándar ID.Título.iso
+// 2. RENOMBRADO Y ORGANIZACIÓN
 #[tauri::command]
 fn fix_iso_filename(game_path: String, game_id: String) -> Result<String, String> {
     let current_path = PathBuf::from(&game_path);
@@ -169,12 +181,13 @@ fn fix_iso_filename(game_path: String, game_id: String) -> Result<String, String
         return Ok("El archivo ya cumple con el formato estándar de OPL.".to_string());
     }
 
+    println!("[DEBUG] Renombrando de {:?} a {:?}", current_path, new_path);
     fs::rename(&current_path, &new_path).map_err(|e| e.to_string())?;
 
     Ok(new_path.to_string_lossy().to_string())
 }
 
-// 3. ARCHIVOS DE CONFIGURACIÓN (.CFG): Escribe metadatos en /CFG/ID.cfg
+// 3. ARCHIVOS DE CONFIGURACIÓN (.CFG)
 #[tauri::command]
 fn save_game_cfg(
     opl_path: String,
@@ -204,7 +217,7 @@ fn save_game_cfg(
     Ok("Archivo .cfg guardado correctamente".into())
 }
 
-// 4. LECTOR DE CARÁTULAS: Lee la imagen local y la envía al frontend en bytes
+// 4. LECTOR DE CARÁTULAS
 #[tauri::command]
 fn get_cover_image(opl_path: String, game_id: String) -> Result<Vec<u8>, String> {
     let art_dir = PathBuf::from(opl_path).join("ART");
@@ -220,6 +233,89 @@ fn get_cover_image(opl_path: String, game_id: String) -> Result<Vec<u8>, String>
     }
 }
 
+// 5. PROCESAMIENTO EN LOTE (BATCH ACTIONS) - Ejecutado en hilo spawn_blocking
+#[tauri::command]
+async fn batch_process_games(app: AppHandle, opl_path: String, games: Vec<Ps2Game>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let total = games.len();
+        if total == 0 {
+            return Ok("No hay juegos para procesar".into());
+        }
+
+        let art_dir = PathBuf::from(&opl_path).join("ART");
+        let cfg_dir = PathBuf::from(&opl_path).join("CFG");
+
+        for (index, game) in games.into_iter().enumerate() {
+            let current = index + 1;
+            println!("\n[BATCH {}/{}] Procesando: {} (ID: {})", current, total, game.title, game.id);
+
+            if game.id == "DESCONOCIDO" {
+                println!("[BATCH] Omitiendo porque el ID es DESCONOCIDO");
+                let _ = app.emit("batch_progress", BatchProgressPayload {
+                    current,
+                    total,
+                    game_title: game.title.clone(),
+                    action: "Omitido (ID desconocido)".into(),
+                });
+                continue;
+            }
+
+            // Paso A: Renombrar si no cumple el formato
+            let is_formatted = game.file_name.to_lowercase().starts_with(&format!("{}.", game.id.to_lowercase()));
+            if !is_formatted {
+                let _ = app.emit("batch_progress", BatchProgressPayload {
+                    current,
+                    total,
+                    game_title: game.title.clone(),
+                    action: "Renombrando a formato OPL...".into(),
+                });
+                let _ = fix_iso_filename(game.path.clone(), game.id.clone());
+            }
+
+            // Paso B: Descargar carátula si falta
+            let has_art = art_dir.join(format!("{}_COV.jpg", game.id)).exists()
+                || art_dir.join(format!("{}_COV.png", game.id)).exists();
+
+            if !has_art {
+                let _ = app.emit("batch_progress", BatchProgressPayload {
+                    current,
+                    total,
+                    game_title: game.title.clone(),
+                    action: "Descargando carátula...".into(),
+                });
+                let _ = download_art(opl_path.clone(), game.id.clone());
+            } else {
+                println!("[BATCH] Carátula ya presente para {}", game.id);
+            }
+
+            // Paso C: Crear .cfg si no existe
+            let cfg_file = cfg_dir.join(format!("{}.cfg", game.id));
+            if !cfg_file.exists() {
+                let _ = app.emit("batch_progress", BatchProgressPayload {
+                    current,
+                    total,
+                    game_title: game.title.clone(),
+                    action: "Generando archivo CFG...".into(),
+                });
+                let _ = save_game_cfg(opl_path.clone(), game.id.clone(), game.title.clone(), "MDMA_0".into(), vec![]);
+            } else {
+                println!("[BATCH] Archivo .cfg ya presente para {}", game.id);
+            }
+        }
+
+        let _ = app.emit("batch_progress", BatchProgressPayload {
+            current: total,
+            total,
+            game_title: "Completado".into(),
+            action: "Todos los juegos han sido procesados.".into(),
+        });
+
+        Ok("Procesamiento por lote finalizado con éxito".into())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -230,7 +326,8 @@ pub fn run() {
             download_art,
             fix_iso_filename,
             save_game_cfg,
-            get_cover_image
+            get_cover_image,
+            batch_process_games
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
