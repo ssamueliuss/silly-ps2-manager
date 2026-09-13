@@ -42,7 +42,7 @@ type Language = "es" | "en";
 
 const translations = {
   es: {
-    openFolder: "📁 Abrir Directorio",
+    openFolder: "📁 Abrir OPL",
     prepareUsbBtn: "💽 Preparar USB",
     syncBtn: "📥 Clonar a destino",
     reload: "🔄 Recargar",
@@ -82,6 +82,8 @@ const translations = {
     closeBtn: "Cerrar",
     dirLoaded: "Directorio cargado",
     dirReloaded: "Directorio recargado",
+    prevDirLoaded: "Directorio anterior cargado automáticamente",
+    prevDirFailed: "La unidad guardada no está conectada",
     standardRenamed: "Archivo renombrado a estándar OPL",
     cfgSaved: "Archivo .cfg guardado correctamente",
     usbSetupTitle: "Preparar Unidad USB",
@@ -95,7 +97,7 @@ const translations = {
     processing: "Procesando...",
   },
   en: {
-    openFolder: "📁 Open Directory",
+    openFolder: "📁 Open OPL",
     prepareUsbBtn: "💽 Prepare USB",
     syncBtn: "📥 Clone / Sync",
     reload: "🔄 Reload",
@@ -135,6 +137,8 @@ const translations = {
     closeBtn: "Close",
     dirLoaded: "Directory loaded",
     dirReloaded: "Directory reloaded",
+    prevDirLoaded: "Previous directory loaded automatically",
+    prevDirFailed: "Saved drive is not connected",
     standardRenamed: "File renamed to OPL standard",
     cfgSaved: "CFG file saved successfully",
     usbSetupTitle: "Prepare USB Drive",
@@ -179,6 +183,30 @@ export default function App() {
     return fileName.toLowerCase().startsWith(`${id.toLowerCase()}.`);
   };
 
+  // Carga inicial del directorio guardado en LocalStorage
+  useEffect(() => {
+    const savedPath = localStorage.getItem("opl_last_path");
+    if (savedPath) {
+      setOplPath(savedPath);
+      setLoading(true);
+      invoke<Ps2Game[]>("scan_opl_folder", { oplPath: savedPath })
+        .then((result) => {
+          setGames(result);
+          toast.info(translations[lang].prevDirLoaded, { description: savedPath });
+        })
+        .catch(() => {
+          // Si falla (ej: el USB ya no está conectado), limpiamos la ruta suavemente
+          setOplPath(null);
+          localStorage.removeItem("opl_last_path");
+          toast.warning(translations[lang].prevDirFailed);
+        })
+        .finally(() => {
+          setLoading(false);
+        });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const refreshGames = async (path: string, showToast = false) => {
     setLoading(true);
     try {
@@ -207,6 +235,7 @@ export default function App() {
 
     if (typeof selected === "string") {
       setOplPath(selected);
+      localStorage.setItem("opl_last_path", selected); // Guardar persistencia
       setSelectedGame(null);
       toast.info(t.dirLoaded, { description: selected });
       refreshGames(selected);
@@ -385,6 +414,7 @@ export default function App() {
         const folderMsg = await invoke<string>("create_opl_structure", { mountPoint: targetPath });
         toast.success(folderMsg);
         setOplPath(targetPath);
+        localStorage.setItem("opl_last_path", targetPath); // Guardar persistencia post-formateo
         refreshGames(targetPath);
       }
 
