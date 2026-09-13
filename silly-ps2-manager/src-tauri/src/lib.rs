@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use sysinfo::Disks; 
 use tauri::{AppHandle, Emitter};
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -24,7 +26,24 @@ pub struct BatchProgressPayload {
     pub action: String,
 }
 
-// Extrae el Game ID (ej. SLES_533.83) de la cabecera de la ISO
+#[derive(Serialize, Clone)]
+pub struct SyncProgressPayload {
+    pub current_file_idx: usize,
+    pub total_files: usize,
+    pub current_file_name: String,
+    pub percent: u8,
+    pub status_text: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct UsbDrive {
+    pub name: String,
+    pub mount_point: String,
+    pub device_path: String,
+    pub total_space_gb: f64,
+    pub file_system: String,
+}
+
 fn extract_game_id(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let mut buffer = vec![0u8; 4 * 1024 * 1024];
@@ -43,7 +62,6 @@ fn extract_game_id(path: &Path) -> Option<String> {
     }
 }
 
-// Escaneo de juegos en las carpetas DVD y CD
 #[tauri::command]
 fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
     let base = PathBuf::from(&opl_path);
@@ -95,7 +113,6 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
     Ok(games)
 }
 
-// 1. GESTIÓN DE CARÁTULAS Y ARTE
 #[tauri::command]
 fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
     let base = PathBuf::from(&opl_path);
@@ -105,8 +122,6 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
     }
 
     let clean_id = game_id.replace('_', "-").replace('.', "");
-    println!("[DEBUG] Buscando carátula para ID limpio: {}", clean_id);
-
     let client = reqwest::blocking::Client::builder()
         .user_agent("SillyPS2Manager/1.0")
         .timeout(std::time::Duration::from_secs(10))
@@ -122,15 +137,12 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
     ];
 
     for url in urls {
-        println!("[DEBUG] Probando URL: {}", url);
         if let Ok(res) = client.get(&url).send() {
-            println!("[DEBUG] Respuesta status: {}", res.status());
             if res.status().is_success() {
                 if let Ok(bytes) = res.bytes() {
                     if let Ok(mut file) = File::create(&target_file_path) {
                         if file.write_all(&bytes).is_ok() {
                             downloaded = true;
-                            println!("[DEBUG] ¡Carátula descargada con éxito!");
                             break;
                         }
                     }
@@ -146,7 +158,6 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
     }
 }
 
-// 2. RENOMBRADO Y ORGANIZACIÓN
 #[tauri::command]
 fn fix_iso_filename(game_path: String, game_id: String) -> Result<String, String> {
     let current_path = PathBuf::from(&game_path);
@@ -181,13 +192,10 @@ fn fix_iso_filename(game_path: String, game_id: String) -> Result<String, String
         return Ok("El archivo ya cumple con el formato estándar de OPL.".to_string());
     }
 
-    println!("[DEBUG] Renombrando de {:?} a {:?}", current_path, new_path);
     fs::rename(&current_path, &new_path).map_err(|e| e.to_string())?;
-
     Ok(new_path.to_string_lossy().to_string())
 }
 
-// 3. ARCHIVOS DE CONFIGURACIÓN (.CFG)
 #[tauri::command]
 fn save_game_cfg(
     opl_path: String,
@@ -217,7 +225,6 @@ fn save_game_cfg(
     Ok("Archivo .cfg guardado correctamente".into())
 }
 
-// 4. LECTOR DE CARÁTULAS
 #[tauri::command]
 fn get_cover_image(opl_path: String, game_id: String) -> Result<Vec<u8>, String> {
     let art_dir = PathBuf::from(opl_path).join("ART");
@@ -233,84 +240,310 @@ fn get_cover_image(opl_path: String, game_id: String) -> Result<Vec<u8>, String>
     }
 }
 
-// 5. PROCESAMIENTO EN LOTE (BATCH ACTIONS) - Ejecutado en hilo spawn_blocking
 #[tauri::command]
 async fn batch_process_games(app: AppHandle, opl_path: String, games: Vec<Ps2Game>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let total = games.len();
-        if total == 0 {
-            return Ok("No hay juegos para procesar".into());
-        }
+        if total == 0 { return Ok("No hay juegos".into()); }
 
         let art_dir = PathBuf::from(&opl_path).join("ART");
         let cfg_dir = PathBuf::from(&opl_path).join("CFG");
 
         for (index, game) in games.into_iter().enumerate() {
             let current = index + 1;
-            println!("\n[BATCH {}/{}] Procesando: {} (ID: {})", current, total, game.title, game.id);
-
+            
             if game.id == "DESCONOCIDO" {
-                println!("[BATCH] Omitiendo porque el ID es DESCONOCIDO");
                 let _ = app.emit("batch_progress", BatchProgressPayload {
-                    current,
-                    total,
-                    game_title: game.title.clone(),
-                    action: "Omitido (ID desconocido)".into(),
+                    current, total, game_title: game.title.clone(), action: "Omitido (ID desconocido)".into(),
                 });
                 continue;
             }
 
-            // Paso A: Renombrar si no cumple el formato
             let is_formatted = game.file_name.to_lowercase().starts_with(&format!("{}.", game.id.to_lowercase()));
             if !is_formatted {
                 let _ = app.emit("batch_progress", BatchProgressPayload {
-                    current,
-                    total,
-                    game_title: game.title.clone(),
-                    action: "Renombrando a formato OPL...".into(),
+                    current, total, game_title: game.title.clone(), action: "Renombrando a formato OPL...".into(),
                 });
                 let _ = fix_iso_filename(game.path.clone(), game.id.clone());
             }
 
-            // Paso B: Descargar carátula si falta
             let has_art = art_dir.join(format!("{}_COV.jpg", game.id)).exists()
                 || art_dir.join(format!("{}_COV.png", game.id)).exists();
-
             if !has_art {
                 let _ = app.emit("batch_progress", BatchProgressPayload {
-                    current,
-                    total,
-                    game_title: game.title.clone(),
-                    action: "Descargando carátula...".into(),
+                    current, total, game_title: game.title.clone(), action: "Descargando carátula...".into(),
                 });
                 let _ = download_art(opl_path.clone(), game.id.clone());
-            } else {
-                println!("[BATCH] Carátula ya presente para {}", game.id);
             }
 
-            // Paso C: Crear .cfg si no existe
             let cfg_file = cfg_dir.join(format!("{}.cfg", game.id));
             if !cfg_file.exists() {
                 let _ = app.emit("batch_progress", BatchProgressPayload {
-                    current,
-                    total,
-                    game_title: game.title.clone(),
-                    action: "Generando archivo CFG...".into(),
+                    current, total, game_title: game.title.clone(), action: "Generando archivo CFG...".into(),
                 });
                 let _ = save_game_cfg(opl_path.clone(), game.id.clone(), game.title.clone(), "MDMA_0".into(), vec![]);
-            } else {
-                println!("[BATCH] Archivo .cfg ya presente para {}", game.id);
             }
         }
 
         let _ = app.emit("batch_progress", BatchProgressPayload {
-            current: total,
-            total,
-            game_title: "Completado".into(),
-            action: "Todos los juegos han sido procesados.".into(),
+            current: total, total, game_title: "Completado".into(), action: "Todos los juegos han sido procesados.".into(),
         });
-
         Ok("Procesamiento por lote finalizado con éxito".into())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn get_removable_drives() -> Vec<UsbDrive> {
+    let mut drives = Vec::new();
+    let disks = Disks::new_with_refreshed_list();
+    
+    for disk in disks.list() {
+        if disk.is_removable() {
+            let size_gb = (disk.total_space() as f64) / (1024.0 * 1024.0 * 1024.0);
+            let dev_path = disk.name().to_string_lossy().to_string();
+            let mount = disk.mount_point().to_string_lossy().to_string();
+
+            drives.push(UsbDrive {
+                name: if dev_path.is_empty() { "USB Drive".to_string() } else { dev_path.clone() },
+                mount_point: mount,
+                device_path: dev_path,
+                total_space_gb: (size_gb * 100.0).round() / 100.0,
+                file_system: disk.file_system().to_string_lossy().to_string(),
+            });
+        }
+    }
+    drives
+}
+
+#[tauri::command]
+fn create_opl_structure(mount_point: String) -> Result<String, String> {
+    let base = PathBuf::from(&mount_point);
+    let folders = ["DVD", "CD", "ART", "CFG", "CHT", "VMC", "THM"];
+    
+    for folder in folders {
+        let dir = base.join(folder);
+        if !dir.exists() {
+            fs::create_dir_all(&dir).map_err(|e| format!("Error creando {}: {}", folder, e))?;
+        }
+    }
+    Ok("Estructura de carpetas OPL creada correctamente.".into())
+}
+
+#[tauri::command]
+async fn format_usb_drive(
+    device_path: String,
+    mount_point: String,
+    fs_type: String, 
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let is_fat32 = fs_type.to_lowercase() == "fat32";
+
+        #[cfg(target_os = "linux")]
+        {
+            let _ = Command::new("udisksctl")
+                .args(["unmount", "-b", device_path.as_str(), "--force"])
+                .output();
+
+            let fs_arg = if is_fat32 { "vfat" } else { "exfat" };
+            let format_output = Command::new("udisksctl")
+                .args(["format", "-b", device_path.as_str(), "-t", fs_arg, "--label", "PS2USB"])
+                .output();
+
+            let format_success = match format_output {
+                Ok(out) => out.status.success(),
+                Err(_) => false,
+            };
+
+            if !format_success {
+                let (cmd, args) = if is_fat32 {
+                    ("mkfs.vfat", vec!["-F", "32", "-s", "64", "-I", "-n", "PS2USB", device_path.as_str()])
+                } else {
+                    ("mkfs.exfat", vec!["-n", "PS2USB", device_path.as_str()])
+                };
+
+                let pkexec_out = Command::new("pkexec")
+                    .arg(cmd)
+                    .args(&args)
+                    .output()
+                    .map_err(|e| format!("Error ejecutando formateo: {}", e))?;
+
+                if !pkexec_out.status.success() {
+                    let err = String::from_utf8_lossy(&pkexec_out.stderr);
+                    return Err(format!("Error en mkfs: {}", err));
+                }
+            }
+
+            let mount_cmd = Command::new("udisksctl")
+                .args(["mount", "-b", device_path.as_str()])
+                .output()
+                .map_err(|e| format!("Error al montar unidad formateada: {}", e))?;
+
+            let mount_stdout = String::from_utf8_lossy(&mount_cmd.stdout);
+            let final_mount = if let Some(pos) = mount_stdout.find(" at ") {
+                let raw_path = &mount_stdout[pos + 4..];
+                raw_path.trim().trim_end_matches('.').to_string()
+            } else {
+                mount_point
+            };
+
+            Ok(final_mount)
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let drive_letter = if !mount_point.is_empty() {
+                mount_point.trim_end_matches('\\').to_string()
+            } else {
+                device_path.trim_end_matches('\\').to_string()
+            };
+
+            let clean_letter = drive_letter.replace(':', "");
+            let ps_script = if is_fat32 {
+                format!("Format-Volume -DriveLetter {} -FileSystem FAT32 -AllocationUnitSize 32768 -NewFileSystemLabel 'PS2USB' -Force", clean_letter)
+            } else {
+                format!("Format-Volume -DriveLetter {} -FileSystem exFAT -NewFileSystemLabel 'PS2USB' -Force", clean_letter)
+            };
+
+            let output = Command::new("powershell")
+                .args(["-Command", &format!("Start-Process powershell -ArgumentList '-NoProfile -Command \"{}\"' -Verb RunAs -Wait", ps_script)])
+                .output()
+                .map_err(|e| format!("Error en PowerShell: {}", e))?;
+
+            if !output.status.success() {
+                let err_str = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("Error en PowerShell: {}", err_str));
+            }
+
+            Ok(format!("{}:\\", clean_letter))
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            Err("Formateo no soportado en este sistema operativo.".to_string())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// 9. CLONACIÓN INTELIGENTE CON SYNC DE HARDWARE REAL
+#[tauri::command]
+async fn sync_opl_folder(app: AppHandle, source_path: String, target_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let folders = ["DVD", "CD", "ART", "CFG", "CHT", "VMC", "THM"];
+        let mut files_to_copy = Vec::new();
+
+        for folder in &folders {
+            let src_dir = PathBuf::from(&source_path).join(folder);
+            let dst_dir = PathBuf::from(&target_path).join(folder);
+            
+            if src_dir.exists() {
+                if !dst_dir.exists() {
+                    let _ = fs::create_dir_all(&dst_dir);
+                }
+                if let Ok(entries) = fs::read_dir(&src_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let dst_path = dst_dir.join(entry.file_name());
+                            
+                            let mut should_copy = true;
+                            if dst_path.exists() {
+                                if let (Ok(src_meta), Ok(dst_meta)) = (entry.metadata(), dst_path.metadata()) {
+                                    if src_meta.len() == dst_meta.len() {
+                                        should_copy = false;
+                                    }
+                                }
+                            }
+                            if should_copy {
+                                files_to_copy.push((path, dst_path, entry.file_name().to_string_lossy().to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let total_files = files_to_copy.len();
+        if total_files == 0 {
+            return Ok("Todo está sincronizado. No hay archivos nuevos para copiar.".into());
+        }
+
+        // Buffer de 4MB para balancear rendimiento y respuesta
+        let mut buffer = vec![0u8; 4 * 1024 * 1024];
+
+        for (idx, (src, dst, name)) in files_to_copy.into_iter().enumerate() {
+            let current_idx = idx + 1;
+            let mut src_file = File::open(&src).map_err(|e| format!("Error leyendo {}: {}", name, e))?;
+            let mut dst_file = File::create(&dst).map_err(|e| format!("Error creando destino {}: {}", name, e))?;
+            
+            let total_size = src_file.metadata().map(|m| m.len()).unwrap_or(0);
+            let mut copied = 0u64;
+            let mut since_last_sync = 0u64;
+            let mut last_percent = 200;
+
+            let _ = app.emit("sync_progress", SyncProgressPayload {
+                current_file_idx: current_idx,
+                total_files,
+                current_file_name: name.clone(),
+                percent: 0,
+                status_text: "Copiando...".into(),
+            });
+
+            loop {
+                let bytes_read = src_file.read(&mut buffer).map_err(|e| e.to_string())?;
+                if bytes_read == 0 { break; }
+                
+                dst_file.write_all(&buffer[..bytes_read]).map_err(|e| e.to_string())?;
+                copied += bytes_read as u64;
+                since_last_sync += bytes_read as u64;
+
+                // Sincronizar periódicamente con el disco físico cada 32MB
+                // Esto evita que la RAM absorba todo y hace que el progreso refleje la velocidad real del USB
+                if since_last_sync >= 32 * 1024 * 1024 {
+                    let _ = dst_file.sync_data();
+                    since_last_sync = 0;
+                }
+
+                if total_size > 0 {
+                    let percent = ((copied as f64 / total_size as f64) * 98.0) as u8; // Reservamos 99-100% para el flush final
+                    if percent != last_percent && percent % 2 == 0 {
+                        let _ = app.emit("sync_progress", SyncProgressPayload {
+                            current_file_idx: current_idx,
+                            total_files,
+                            current_file_name: name.clone(),
+                            percent,
+                            status_text: format!("{}%", percent),
+                        });
+                        last_percent = percent;
+                    }
+                }
+            }
+
+            // Avisamos al usuario del vaciado final de caché para que entienda la pausa si ocurre
+            let _ = app.emit("sync_progress", SyncProgressPayload {
+                current_file_idx: current_idx,
+                total_files,
+                current_file_name: name.clone(),
+                percent: 99,
+                status_text: "Asegurando en memoria flash...".into(),
+            });
+
+            // Vaciado definitivo al hardware
+            let _ = dst_file.sync_all();
+
+            let _ = app.emit("sync_progress", SyncProgressPayload {
+                current_file_idx: current_idx,
+                total_files,
+                current_file_name: name.clone(),
+                percent: 100,
+                status_text: "100%".into(),
+            });
+        }
+
+        Ok(format!("{} archivos sincronizados correctamente.", total_files))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -327,7 +560,11 @@ pub fn run() {
             fix_iso_filename,
             save_game_cfg,
             get_cover_image,
-            batch_process_games
+            batch_process_games,
+            get_removable_drives,
+            create_opl_structure,
+            format_usb_drive,
+            sync_opl_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
