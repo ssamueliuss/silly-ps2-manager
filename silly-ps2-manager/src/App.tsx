@@ -42,7 +42,7 @@ type Language = "es" | "en";
 
 const translations = {
   es: {
-    openFolder: "📁 Abrir OPL",
+    openFolder: "📁 Abrir Directorio",
     prepareUsbBtn: "💽 Preparar USB",
     syncBtn: "📥 Clonar a destino",
     reload: "🔄 Recargar",
@@ -73,6 +73,7 @@ const translations = {
     syncRunningTitle: "Sincronizando al Destino...",
     syncFileLabel: "Archivo:",
     syncDone: "Sincronización finalizada",
+    syncWarning: "Nota: Esto puede tardar tiempo dependiendo de la velocidad de tu pendrive, ten paciencia (hacerlo a mano tal vez lo agilice un poco más).",
     settingsTitle: "Configuración & Información",
     langSection: "Idioma de la interfaz",
     aboutSection: "Acerca de la aplicación",
@@ -94,7 +95,7 @@ const translations = {
     processing: "Procesando...",
   },
   en: {
-    openFolder: "📁 Open OPL",
+    openFolder: "📁 Open Directory",
     prepareUsbBtn: "💽 Prepare USB",
     syncBtn: "📥 Clone / Sync",
     reload: "🔄 Reload",
@@ -125,6 +126,7 @@ const translations = {
     syncRunningTitle: "Syncing to Destination...",
     syncFileLabel: "File:",
     syncDone: "Synchronization finished",
+    syncWarning: "Note: This may take some time depending on your USB speed, be patient (doing it manually might speed it up a bit more).",
     settingsTitle: "Settings & Information",
     langSection: "Interface Language",
     aboutSection: "About Application",
@@ -499,6 +501,9 @@ export default function App() {
               </div>
               <div style={{ fontSize: 12, color: "#4A6B5D", fontWeight: 600 }}>
                 Estado: {syncProgress?.status_text || "Transfiriendo..."}
+              </div>
+              <div style={{ fontSize: 11, color: "#8A848D", marginTop: 4, fontStyle: "italic", lineHeight: 1.4 }}>
+                {t.syncWarning}
               </div>
             </div>
           </div>
