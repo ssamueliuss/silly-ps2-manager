@@ -183,7 +183,6 @@ export default function App() {
     return fileName.toLowerCase().startsWith(`${id.toLowerCase()}.`);
   };
 
-  // Carga inicial del directorio guardado en LocalStorage
   useEffect(() => {
     const savedPath = localStorage.getItem("opl_last_path");
     if (savedPath) {
@@ -195,7 +194,6 @@ export default function App() {
           toast.info(translations[lang].prevDirLoaded, { description: savedPath });
         })
         .catch(() => {
-          // Si falla (ej: el USB ya no está conectado), limpiamos la ruta suavemente
           setOplPath(null);
           localStorage.removeItem("opl_last_path");
           toast.warning(translations[lang].prevDirFailed);
@@ -235,7 +233,7 @@ export default function App() {
 
     if (typeof selected === "string") {
       setOplPath(selected);
-      localStorage.setItem("opl_last_path", selected); // Guardar persistencia
+      localStorage.setItem("opl_last_path", selected);
       setSelectedGame(null);
       toast.info(t.dirLoaded, { description: selected });
       refreshGames(selected);
@@ -413,10 +411,11 @@ export default function App() {
       if (createFolders) {
         const folderMsg = await invoke<string>("create_opl_structure", { mountPoint: targetPath });
         toast.success(folderMsg);
-        setOplPath(targetPath);
-        localStorage.setItem("opl_last_path", targetPath); // Guardar persistencia post-formateo
-        refreshGames(targetPath);
       }
+
+      setOplPath(targetPath);
+      localStorage.setItem("opl_last_path", targetPath);
+      refreshGames(targetPath);
 
       setIsUsbSetupOpen(false);
     } catch (err) {
@@ -427,8 +426,8 @@ export default function App() {
   };
 
   const stats = useMemo(() => {
-    const dvdGames = games.filter((g) => g.media_type === "DVD");
-    const cdGames = games.filter((g) => g.media_type === "CD");
+    const dvdGames = games.filter((g) => g.media_type.includes("DVD"));
+    const cdGames = games.filter((g) => g.media_type.includes("CD"));
     const totalSize = games.reduce((acc, g) => acc + g.size_gb, 0);
     return {
       dvdCount: dvdGames.length,
@@ -676,7 +675,8 @@ export default function App() {
               <tbody>
                 {games.map((g) => {
                   const isSelected = selectedGame?.id === g.id;
-                  const formatted = isOplFormatted(g.file_name, g.id);
+                  const isSplit = g.media_type.includes("Split");
+                  const formatted = isSplit || isOplFormatted(g.file_name, g.id);
                   return (
                     <tr key={g.path} onClick={() => setSelectedGame(g)} style={{ borderBottom: "1px solid #F5F1E8", backgroundColor: isSelected ? "#EAE4D8" : "transparent", color: isSelected ? "#2B262C" : "inherit", cursor: "pointer" }}>
                       <td style={{ padding: "4px 12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 220, fontWeight: isSelected ? 600 : 400, textAlign: "center" }}>{g.title}</td>
@@ -713,7 +713,7 @@ export default function App() {
           <fieldset style={{ border: "1px solid #DCD5C8", borderRadius: 6, padding: "12px", backgroundColor: "#FFFFFF", margin: 0, boxSizing: "border-box", width: "100%" }}>
             <legend style={{ fontSize: 12, fontWeight: 700, color: "#2B262C", padding: "0 6px" }}>{t.operations}</legend>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <button onClick={handleFixName} disabled={!selectedGame || (selectedGame && isOplFormatted(selectedGame.file_name, selectedGame.id))} style={{ width: "100%", boxSizing: "border-box", padding: 8, border: "1px solid #2B262C", borderRadius: 4, backgroundColor: selectedGame && !isOplFormatted(selectedGame.file_name, selectedGame.id) ? "#2B262C" : "#EAE4D8", color: selectedGame && !isOplFormatted(selectedGame.file_name, selectedGame.id) ? "#F5F1E8" : "#8A848D", cursor: selectedGame && !isOplFormatted(selectedGame.file_name, selectedGame.id) ? "pointer" : "default", fontWeight: 600 }}>{t.renameBtn}</button>
+              <button onClick={handleFixName} disabled={!selectedGame || selectedGame.media_type.includes("Split") || isOplFormatted(selectedGame.file_name, selectedGame.id)} style={{ width: "100%", boxSizing: "border-box", padding: 8, border: "1px solid #2B262C", borderRadius: 4, backgroundColor: selectedGame && !selectedGame.media_type.includes("Split") && !isOplFormatted(selectedGame.file_name, selectedGame.id) ? "#2B262C" : "#EAE4D8", color: selectedGame && !selectedGame.media_type.includes("Split") && !isOplFormatted(selectedGame.file_name, selectedGame.id) ? "#F5F1E8" : "#8A848D", cursor: selectedGame && !selectedGame.media_type.includes("Split") && !isOplFormatted(selectedGame.file_name, selectedGame.id) ? "pointer" : "default", fontWeight: 600 }}>{t.renameBtn}</button>
               <button onClick={handleGenerateCfg} disabled={!selectedGame} style={{ width: "100%", boxSizing: "border-box", padding: 8, border: "1px solid #2B262C", borderRadius: 4, backgroundColor: selectedGame ? "#F5F1E8" : "#EAE4D8", color: selectedGame ? "#2B262C" : "#8A848D", cursor: selectedGame ? "pointer" : "default", fontWeight: 600 }}>{t.cfgBtn}</button>
               <button onClick={handleDownloadArt} disabled={!selectedGame} style={{ width: "100%", boxSizing: "border-box", padding: 8, border: "1px solid #2B262C", borderRadius: 4, backgroundColor: selectedGame ? "#F5F1E8" : "#EAE4D8", color: selectedGame ? "#2B262C" : "#8A848D", cursor: selectedGame ? "pointer" : "default", fontWeight: 600 }}>{t.downloadArtBtn}</button>
             </div>

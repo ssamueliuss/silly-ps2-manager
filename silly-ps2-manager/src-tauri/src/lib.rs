@@ -1,7 +1,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use sysinfo::Disks; 
@@ -44,6 +44,22 @@ pub struct UsbDrive {
     pub file_system: String,
 }
 
+// Generador de CRC32 manual para nombrar las partes USBUtil sin dependencias extra
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFFFFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc ^ 0xFFFFFFFF
+}
+
 fn extract_game_id(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let mut buffer = vec![0u8; 4 * 1024 * 1024];
@@ -70,6 +86,7 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
 
     let serial_cleanup_re = Regex::new(r"(?i)^(SLES|SLUS|SCES|SCUS|SLPM|SCPS|SLKA)[-_.](\d{3})[-_.](\d{2})[._\s-]*").unwrap();
 
+    // 1. Escaneo de ISOs estándar en DVD y CD
     for subfolder in ["DVD", "CD"] {
         let dir_path = base.join(subfolder);
         if let Ok(entries) = fs::read_dir(dir_path) {
@@ -92,8 +109,8 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
                                 clean_title
                             };
 
-                            let has_cover = art_dir.join(format!("{}_COV.jpg", id)).exists()
-                                || art_dir.join(format!("{}_COV.png", id)).exists();
+                            let has_cover = art_dir.join(format!("{}_COV.png", id)).exists()
+                                || art_dir.join(format!("{}_COV.jpg", id)).exists();
 
                             games.push(Ps2Game {
                                 id,
@@ -110,6 +127,52 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
             }
         }
     }
+
+    // 2. Escaneo de juegos divididos (USBUtil) mediante el archivo maestro ul.cfg
+    let ul_cfg_path = base.join("ul.cfg");
+    if let Ok(mut f) = File::open(ul_cfg_path) {
+        let mut buf = [0u8; 64];
+        while f.read_exact(&mut buf).is_ok() {
+            let title = String::from_utf8_lossy(&buf[0..32]).trim_matches('\0').trim().to_string();
+            // Leemos el prefijo base de 14 bytes (ej. "ul.932A1EC4")
+            let startup = String::from_utf8_lossy(&buf[32..46]).trim_matches('\0').trim().to_string();
+            let parts = buf[47];
+            let media = buf[48]; // 0x12 DVD, 0x14 CD
+
+            if startup.is_empty() { continue; }
+
+            let mut id = startup.clone();
+            
+            // CORRECCIÓN: Buscamos en el directorio el archivo ".00" real para extraer el Game ID completo que inyectó USBUtil
+            if let Ok(entries) = fs::read_dir(&base) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(&startup) && name.ends_with(".00") {
+                        if let Some(stripped) = name.strip_prefix(&format!("{}.", startup)) {
+                            if let Some(real_id) = stripped.strip_suffix(".00") {
+                                id = real_id.to_string(); // Extraemos "SCES_517.19"
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let has_cover = art_dir.join(format!("{}_COV.png", id)).exists()
+                || art_dir.join(format!("{}_COV.jpg", id)).exists();
+
+            games.push(Ps2Game {
+                id,
+                title,
+                file_name: format!("ul.cfg ({} parts)", parts),
+                path: base.to_string_lossy().to_string(),
+                size_gb: ((parts as f64) * 1024.0 * 1024.0 * 1024.0) / (1024.0 * 1024.0 * 1024.0), 
+                media_type: if media == 0x12 { "DVD (Split)".to_string() } else { "CD (Split)".to_string() },
+                has_cover,
+            });
+        }
+    }
+
     Ok(games)
 }
 
@@ -128,39 +191,49 @@ fn download_art(opl_path: String, game_id: String) -> Result<String, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    let target_file_path = art_dir.join(format!("{}_COV.jpg", game_id));
-    let mut downloaded = false;
-
     let urls = [
         format!("https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/default/{}.jpg", clean_id),
-        format!("https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/3d/{}.jpg", clean_id),
+        format!("https://raw.githubusercontent.com/xlenore/ps2-covers/main/covers/3d/{}.png", clean_id),
     ];
+
+    let mut raw_bytes: Option<Vec<u8>> = None;
 
     for url in urls {
         if let Ok(res) = client.get(&url).send() {
             if res.status().is_success() {
                 if let Ok(bytes) = res.bytes() {
-                    if let Ok(mut file) = File::create(&target_file_path) {
-                        if file.write_all(&bytes).is_ok() {
-                            downloaded = true;
-                            break;
-                        }
-                    }
+                    raw_bytes = Some(bytes.to_vec());
+                    break;
                 }
             }
         }
     }
 
-    if downloaded {
-        Ok(format!("Carátula descargada con éxito en /ART/{}_COV.jpg", game_id))
-    } else {
-        Err(format!("No se encontró carátula para {}", clean_id))
-    }
+    let bytes = raw_bytes.ok_or_else(|| format!("No se encontró carátula para {}", clean_id))?;
+
+    let img = image::load(Cursor::new(&bytes), image::ImageFormat::from_path(Path::new("dummy.jpg")).unwrap_or(image::ImageFormat::Jpeg))
+        .or_else(|_| image::load_from_memory(&bytes))
+        .map_err(|e| format!("Error decodificando imagen: {}", e))?;
+
+    let resized = img.resize_exact(140, 200, image::imageops::FilterType::Lanczos3);
+
+    let target_png = art_dir.join(format!("{}_COV.png", game_id));
+    let target_jpg = art_dir.join(format!("{}_COV.jpg", game_id));
+
+    let _ = resized.save_with_format(&target_png, image::ImageFormat::Png);
+    let _ = resized.save_with_format(&target_jpg, image::ImageFormat::Jpeg);
+
+    Ok(format!("Carátula descargada y optimizada para OPL (140x200)"))
 }
 
 #[tauri::command]
 fn fix_iso_filename(game_path: String, game_id: String) -> Result<String, String> {
     let current_path = PathBuf::from(&game_path);
+    
+    if !current_path.is_file() {
+        return Ok("No aplica para juegos divididos.".to_string());
+    }
+
     let parent_dir = current_path.parent().ok_or("No se encontró el directorio padre")?;
 
     let file_stem = current_path
@@ -228,13 +301,13 @@ fn save_game_cfg(
 #[tauri::command]
 fn get_cover_image(opl_path: String, game_id: String) -> Result<Vec<u8>, String> {
     let art_dir = PathBuf::from(opl_path).join("ART");
-    let jpg_path = art_dir.join(format!("{}_COV.jpg", game_id));
     let png_path = art_dir.join(format!("{}_COV.png", game_id));
+    let jpg_path = art_dir.join(format!("{}_COV.jpg", game_id));
 
-    if jpg_path.exists() {
-        fs::read(jpg_path).map_err(|e| e.to_string())
-    } else if png_path.exists() {
+    if png_path.exists() {
         fs::read(png_path).map_err(|e| e.to_string())
+    } else if jpg_path.exists() {
+        fs::read(jpg_path).map_err(|e| e.to_string())
     } else {
         Err("No existe imagen de carátula".into())
     }
@@ -259,7 +332,9 @@ async fn batch_process_games(app: AppHandle, opl_path: String, games: Vec<Ps2Gam
                 continue;
             }
 
-            let is_formatted = game.file_name.to_lowercase().starts_with(&format!("{}.", game.id.to_lowercase()));
+            let is_split = game.media_type.contains("Split");
+            let is_formatted = is_split || game.file_name.to_lowercase().starts_with(&format!("{}.", game.id.to_lowercase()));
+            
             if !is_formatted {
                 let _ = app.emit("batch_progress", BatchProgressPayload {
                     current, total, game_title: game.title.clone(), action: "Renombrando a formato OPL...".into(),
@@ -267,8 +342,8 @@ async fn batch_process_games(app: AppHandle, opl_path: String, games: Vec<Ps2Gam
                 let _ = fix_iso_filename(game.path.clone(), game.id.clone());
             }
 
-            let has_art = art_dir.join(format!("{}_COV.jpg", game.id)).exists()
-                || art_dir.join(format!("{}_COV.png", game.id)).exists();
+            let has_art = art_dir.join(format!("{}_COV.png", game.id)).exists()
+                || art_dir.join(format!("{}_COV.jpg", game.id)).exists();
             if !has_art {
                 let _ = app.emit("batch_progress", BatchProgressPayload {
                     current, total, game_title: game.title.clone(), action: "Descargando carátula...".into(),
@@ -383,11 +458,12 @@ async fn format_usb_drive(
             let mount_stdout = String::from_utf8_lossy(&mount_cmd.stdout);
             let final_mount = if let Some(pos) = mount_stdout.find(" at ") {
                 let raw_path = &mount_stdout[pos + 4..];
-                raw_path.trim().trim_end_matches('.').to_string()
+                raw_path.trim().trim_end_matches('.').trim_end_matches('\n').to_string()
             } else {
                 mount_point
             };
 
+            std::thread::sleep(std::time::Duration::from_millis(2000));
             Ok(final_mount)
         }
 
@@ -416,6 +492,7 @@ async fn format_usb_drive(
                 return Err(format!("Error en PowerShell: {}", err_str));
             }
 
+            std::thread::sleep(std::time::Duration::from_millis(1500));
             Ok(format!("{}:\\", clean_letter))
         }
 
@@ -428,10 +505,47 @@ async fn format_usb_drive(
     .map_err(|e| e.to_string())?
 }
 
-// 9. CLONACIÓN INTELIGENTE CON SYNC DE HARDWARE REAL
 #[tauri::command]
 async fn sync_opl_folder(app: AppHandle, source_path: String, target_path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let mut target_is_fat32 = false;
+        let disks = Disks::new_with_refreshed_list();
+        for disk in disks.list() {
+            let mount = disk.mount_point().to_string_lossy().to_string();
+            if target_path.starts_with(&mount) {
+                let fs = disk.file_system().to_string_lossy().to_lowercase();
+                if fs.contains("fat") || fs.contains("vfat") {
+                    target_is_fat32 = true;
+                    break;
+                }
+            }
+        }
+
+        let mut existing_split_ids = std::collections::HashSet::new();
+        let ul_cfg_path = PathBuf::from(&target_path).join("ul.cfg");
+        if let Ok(mut f) = File::open(&ul_cfg_path) {
+            let mut buf = [0u8; 64];
+            while f.read_exact(&mut buf).is_ok() {
+                let startup = String::from_utf8_lossy(&buf[32..46]).trim_matches('\0').trim().to_string();
+                
+                let mut real_id = startup.clone();
+                if let Ok(entries) = fs::read_dir(&target_path) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with(&startup) && name.ends_with(".00") {
+                            if let Some(stripped) = name.strip_prefix(&format!("{}.", startup)) {
+                                if let Some(rid) = stripped.strip_suffix(".00") {
+                                    real_id = rid.to_string();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                existing_split_ids.insert(real_id);
+            }
+        }
+
         let folders = ["DVD", "CD", "ART", "CFG", "CHT", "VMC", "THM"];
         let mut files_to_copy = Vec::new();
 
@@ -448,15 +562,26 @@ async fn sync_opl_folder(app: AppHandle, source_path: String, target_path: Strin
                         let path = entry.path();
                         if path.is_file() {
                             let dst_path = dst_dir.join(entry.file_name());
-                            
                             let mut should_copy = true;
-                            if dst_path.exists() {
+                            
+                            if let Some(ext) = path.extension() {
+                                if ext.to_string_lossy().to_lowercase() == "iso" {
+                                    if let Some(id) = extract_game_id(&path) {
+                                        if existing_split_ids.contains(&id) {
+                                            should_copy = false;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if dst_path.exists() && should_copy {
                                 if let (Ok(src_meta), Ok(dst_meta)) = (entry.metadata(), dst_path.metadata()) {
                                     if src_meta.len() == dst_meta.len() {
                                         should_copy = false;
                                     }
                                 }
                             }
+                            
                             if should_copy {
                                 files_to_copy.push((path, dst_path, entry.file_name().to_string_lossy().to_string()));
                             }
@@ -471,79 +596,143 @@ async fn sync_opl_folder(app: AppHandle, source_path: String, target_path: Strin
             return Ok("Todo está sincronizado. No hay archivos nuevos para copiar.".into());
         }
 
-        // Buffer de 4MB para balancear rendimiento y respuesta
         let mut buffer = vec![0u8; 4 * 1024 * 1024];
 
         for (idx, (src, dst, name)) in files_to_copy.into_iter().enumerate() {
             let current_idx = idx + 1;
             let mut src_file = File::open(&src).map_err(|e| format!("Error leyendo {}: {}", name, e))?;
-            let mut dst_file = File::create(&dst).map_err(|e| format!("Error creando destino {}: {}", name, e))?;
-            
             let total_size = src_file.metadata().map(|m| m.len()).unwrap_or(0);
-            let mut copied = 0u64;
-            let mut since_last_sync = 0u64;
-            let mut last_percent = 200;
+            
+            let is_iso = src.extension().map(|s| s.to_string_lossy().to_lowercase() == "iso").unwrap_or(false);
+            let do_split = is_iso && target_is_fat32 && total_size >= 4_290_000_000; 
 
             let _ = app.emit("sync_progress", SyncProgressPayload {
                 current_file_idx: current_idx,
                 total_files,
                 current_file_name: name.clone(),
                 percent: 0,
-                status_text: "Copiando...".into(),
+                status_text: if do_split { "Cortando (FAT32)...".into() } else { "Copiando...".into() },
             });
 
-            loop {
-                let bytes_read = src_file.read(&mut buffer).map_err(|e| e.to_string())?;
-                if bytes_read == 0 { break; }
+            let mut copied = 0u64;
+            let mut since_last_sync = 0u64;
+            let mut last_percent = 200;
+
+            if do_split {
+                let game_id = extract_game_id(&src).unwrap_or_else(|| "SLUS_000.00".to_string());
+                let stem = Path::new(&name).file_stem().unwrap_or_default().to_string_lossy().to_string();
+                let serial_cleanup_re = Regex::new(r"(?i)^(SLES|SLUS|SCES|SCUS|SLPM|SCPS|SLKA)[-_.](\d{3})[-_.](\d{2})[._\s-]*").unwrap();
+                let clean_title = serial_cleanup_re.replace(&stem, "").trim().to_string();
+                let title = if clean_title.is_empty() { stem } else { clean_title };
+
+                let mut entry = [0u8; 64];
+                let title_bytes = title.as_bytes();
+                let len = title_bytes.len().min(32);
+                entry[0..len].copy_from_slice(&title_bytes[..len]);
+                let crc = crc32(&entry[0..32]);
+
+                // CORRECCIÓN VITAL: El campo startup es STRICTAMENTE ul.CRC32 de 11 bytes.
+                let ul_prefix_short = format!("ul.{:08X}", crc);
+                let prefix_bytes = ul_prefix_short.as_bytes();
+                let p_len = prefix_bytes.len().min(14);
+                entry[32..32+p_len].copy_from_slice(&prefix_bytes[..p_len]);
+                entry[48] = 0x12; 
+
+                // Los archivos se nombran con el ID extra para que OPL lo pueda extraer
+                let ul_prefix = format!("ul.{:08X}.{}", crc, game_id);
                 
-                dst_file.write_all(&buffer[..bytes_read]).map_err(|e| e.to_string())?;
-                copied += bytes_read as u64;
-                since_last_sync += bytes_read as u64;
+                let mut part_idx = 0;
+                let mut bytes_in_part = 0u64;
+                let part_size_limit = 1024 * 1024 * 1024; 
+                
+                let mut dst_file = File::create(PathBuf::from(&target_path).join(format!("{}.{:02}", ul_prefix, part_idx)))
+                    .map_err(|e| format!("Error creando parte {}: {}", part_idx, e))?;
 
-                // Sincronizar periódicamente con el disco físico cada 32MB
-                // Esto evita que la RAM absorba todo y hace que el progreso refleje la velocidad real del USB
-                if since_last_sync >= 32 * 1024 * 1024 {
-                    let _ = dst_file.sync_data();
-                    since_last_sync = 0;
-                }
+                loop {
+                    let bytes_read = src_file.read(&mut buffer).map_err(|e| e.to_string())?;
+                    if bytes_read == 0 { break; }
 
-                if total_size > 0 {
-                    let percent = ((copied as f64 / total_size as f64) * 98.0) as u8; // Reservamos 99-100% para el flush final
-                    if percent != last_percent && percent % 2 == 0 {
-                        let _ = app.emit("sync_progress", SyncProgressPayload {
-                            current_file_idx: current_idx,
-                            total_files,
-                            current_file_name: name.clone(),
-                            percent,
-                            status_text: format!("{}%", percent),
-                        });
-                        last_percent = percent;
+                    let mut offset = 0;
+                    while offset < bytes_read {
+                        let space_left = part_size_limit - bytes_in_part;
+                        let chunk = usize::min(bytes_read - offset, space_left as usize);
+
+                        dst_file.write_all(&buffer[offset..offset+chunk]).map_err(|e| e.to_string())?;
+                        offset += chunk;
+                        bytes_in_part += chunk as u64;
+                        copied += chunk as u64;
+                        since_last_sync += chunk as u64;
+
+                        if bytes_in_part >= part_size_limit {
+                            let _ = dst_file.sync_all();
+                            part_idx += 1;
+                            bytes_in_part = 0;
+                            dst_file = File::create(PathBuf::from(&target_path).join(format!("{}.{:02}", ul_prefix, part_idx)))
+                                .map_err(|e| format!("Error creando parte {}: {}", part_idx, e))?;
+                        }
+                    }
+
+                    if since_last_sync >= 32 * 1024 * 1024 {
+                        let _ = dst_file.sync_data();
+                        since_last_sync = 0;
+                    }
+
+                    if total_size > 0 {
+                        let percent = ((copied as f64 / total_size as f64) * 98.0) as u8; 
+                        if percent != last_percent && percent % 2 == 0 {
+                            let _ = app.emit("sync_progress", SyncProgressPayload {
+                                current_file_idx: current_idx, total_files, current_file_name: name.clone(), percent, status_text: format!("{}%", percent),
+                            });
+                            last_percent = percent;
+                        }
                     }
                 }
+
+                let _ = dst_file.sync_all();
+
+                entry[47] = (part_idx + 1) as u8;
+                let mut cfg_file = fs::OpenOptions::new().create(true).append(true).open(&ul_cfg_path)
+                    .or_else(|_| File::create(&ul_cfg_path))
+                    .map_err(|e| format!("Error abriendo/creando ul.cfg: {}", e))?;
+                cfg_file.write_all(&entry).map_err(|e| e.to_string())?;
+                let _ = cfg_file.sync_all();
+
+            } else {
+                let mut dst_file = File::create(&dst).map_err(|e| format!("Error creando destino {}: {}", name, e))?;
+                
+                loop {
+                    let bytes_read = src_file.read(&mut buffer).map_err(|e| e.to_string())?;
+                    if bytes_read == 0 { break; }
+                    
+                    dst_file.write_all(&buffer[..bytes_read]).map_err(|e| e.to_string())?;
+                    copied += bytes_read as u64;
+                    since_last_sync += bytes_read as u64;
+
+                    if since_last_sync >= 32 * 1024 * 1024 {
+                        let _ = dst_file.sync_data();
+                        since_last_sync = 0;
+                    }
+
+                    if total_size > 0 {
+                        let percent = ((copied as f64 / total_size as f64) * 98.0) as u8; 
+                        if percent != last_percent && percent % 2 == 0 {
+                            let _ = app.emit("sync_progress", SyncProgressPayload {
+                                current_file_idx: current_idx, total_files, current_file_name: name.clone(), percent, status_text: format!("{}%", percent),
+                            });
+                            last_percent = percent;
+                        }
+                    }
+                }
+                
+                let _ = dst_file.sync_all();
             }
 
-            // Avisamos al usuario del vaciado final de caché para que entienda la pausa si ocurre
             let _ = app.emit("sync_progress", SyncProgressPayload {
-                current_file_idx: current_idx,
-                total_files,
-                current_file_name: name.clone(),
-                percent: 99,
-                status_text: "Asegurando en memoria flash...".into(),
-            });
-
-            // Vaciado definitivo al hardware
-            let _ = dst_file.sync_all();
-
-            let _ = app.emit("sync_progress", SyncProgressPayload {
-                current_file_idx: current_idx,
-                total_files,
-                current_file_name: name.clone(),
-                percent: 100,
-                status_text: "100%".into(),
+                current_file_idx: current_idx, total_files, current_file_name: name.clone(), percent: 100, status_text: "100%".into(),
             });
         }
 
-        Ok(format!("{} archivos sincronizados correctamente.", total_files))
+        Ok(format!("{} archivos procesados correctamente.", total_files))
     })
     .await
     .map_err(|e| e.to_string())?
