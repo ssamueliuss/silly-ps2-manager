@@ -467,7 +467,7 @@ async fn format_usb_drive(
             Ok(final_mount)
         }
 
-        #[cfg(target_os = "windows")]
+#[cfg(target_os = "windows")]
         {
             let drive_letter = if !mount_point.is_empty() {
                 mount_point.trim_end_matches('\\').to_string()
@@ -475,24 +475,75 @@ async fn format_usb_drive(
                 device_path.trim_end_matches('\\').to_string()
             };
 
-            let clean_letter = drive_letter.replace(':', "");
-            let ps_script = if is_fat32 {
-                format!("Format-Volume -DriveLetter {} -FileSystem FAT32 -AllocationUnitSize 32768 -NewFileSystemLabel 'PS2USB' -Force", clean_letter)
+            let clean_letter = drive_letter.replace(':', "").trim().to_uppercase();
+            let fs_label = if is_fat32 { "FAT32" } else { "exFAT" };
+
+            let format_cmd = if is_fat32 {
+                format!(
+                    "Format-Volume -DriveLetter {} -FileSystem FAT32 -AllocationUnitSize 32768 -NewFileSystemLabel PS2USB -Force -Verbose",
+                    clean_letter
+                )
             } else {
-                format!("Format-Volume -DriveLetter {} -FileSystem exFAT -NewFileSystemLabel 'PS2USB' -Force", clean_letter)
+                format!(
+                    "Format-Volume -DriveLetter {} -FileSystem exFAT -NewFileSystemLabel PS2USB -Force -Verbose",
+                    clean_letter
+                )
             };
 
+            // Escribimos el script tal cual, sin preocuparnos por escapar variables
+            let ps_body = format!(
+                "$host.UI.RawUI.WindowTitle = 'Silly PS2 Manager - Preparando USB ({}:)'; \n\
+                Write-Host '==================================================' -ForegroundColor Cyan; \n\
+                Write-Host '           SILLY PS2 MANAGER - FORMATEO           ' -ForegroundColor Yellow; \n\
+                Write-Host '==================================================' -ForegroundColor Cyan; \n\
+                Write-Host 'Preparando unidad {}: en formato {}...' -ForegroundColor White; \n\
+                Write-Host 'Por favor, no desconectes el pendrive ni cierres esta ventana.' -ForegroundColor Gray; \n\
+                Write-Host ''; \n\
+                {} ; \n\
+                if ($?) {{ \n\
+                    Write-Host ''; \n\
+                    Write-Host '[OK] Formateo completado con exito.' -ForegroundColor Green; \n\
+                    Start-Sleep -Seconds 2; \n\
+                }} else {{ \n\
+                    Write-Host ''; \n\
+                    Write-Host '[ERROR] No se pudo completar el formateo.' -ForegroundColor Red; \n\
+                    Start-Sleep -Seconds 4; \n\
+                    exit 1; \n\
+                }}",
+                clean_letter, clean_letter, fs_label, format_cmd
+            );
+
+            // Guardamos el script en la carpeta temporal de Windows
+            let temp_dir = std::env::temp_dir();
+            let script_path = temp_dir.join(format!("silly_format_{}.ps1", clean_letter));
+            std::fs::write(&script_path, &ps_body).map_err(|e| format!("Error creando script temporal: {}", e))?;
+
+            // Ejecutamos el archivo de forma segura y esperamos a que termine
+            let wrapper = format!(
+                "$proc = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '{}'); if ($proc.ExitCode -ne 0) {{ exit 1 }}",
+                script_path.to_string_lossy().replace("'", "''")
+            );
+
             let output = Command::new("powershell")
-                .args(["-Command", &format!("Start-Process powershell -ArgumentList '-NoProfile -Command \"{}\"' -Verb RunAs -Wait", ps_script)])
+                .args(["-NoProfile", "-Command", &wrapper])
                 .output()
-                .map_err(|e| format!("Error en PowerShell: {}", e))?;
+                .map_err(|e| format!("Error al invocar PowerShell: {}", e))?;
+
+            // Limpiamos el archivo temporal (ignoramos si falla porque es temp)
+            let _ = std::fs::remove_file(&script_path);
 
             if !output.status.success() {
                 let err_str = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("Error en PowerShell: {}", err_str));
+                let out_str = String::from_utf8_lossy(&output.stdout);
+                return Err(format!(
+                    "Fallo al formatear (¿Cancelaste los permisos de administrador?): {} {}",
+                    err_str.trim(),
+                    out_str.trim()
+                ));
             }
 
             std::thread::sleep(std::time::Duration::from_millis(1500));
+
             Ok(format!("{}:\\", clean_letter))
         }
 
