@@ -44,7 +44,7 @@ pub struct UsbDrive {
     pub file_system: String,
 }
 
-// Generador de CRC32 manual para nombrar las partes USBUtil sin dependencias extra
+// Generador de CRC32 manual
 fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xFFFFFFFF;
     for &byte in data {
@@ -58,6 +58,13 @@ fn crc32(data: &[u8]) -> u32 {
         }
     }
     crc ^ 0xFFFFFFFF
+}
+
+// 1. Generador del Hash exacto de USBUtil para nombrar los archivos .00, .01
+fn generate_usbutil_hash(game_title: &str) -> String {
+    let clean_title = game_title.replace(".", "").replace("_", "").to_uppercase();
+    let crc = crc32(clean_title.as_bytes());
+    format!("{:08X}", crc)
 }
 
 fn extract_game_id(path: &Path) -> Option<String> {
@@ -130,48 +137,48 @@ fn scan_opl_folder(opl_path: String) -> Result<Vec<Ps2Game>, String> {
 
     // 2. Escaneo de juegos divididos (USBUtil) mediante el archivo maestro ul.cfg
     let ul_cfg_path = base.join("ul.cfg");
-    if let Ok(mut f) = File::open(ul_cfg_path) {
-        let mut buf = [0u8; 64];
-        while f.read_exact(&mut buf).is_ok() {
-            let title = String::from_utf8_lossy(&buf[0..32]).trim_matches('\0').trim().to_string();
-            // Leemos el prefijo base de 14 bytes (ej. "ul.932A1EC4")
-            let startup = String::from_utf8_lossy(&buf[32..46]).trim_matches('\0').trim().to_string();
-            let parts = buf[47];
-            let media = buf[48]; // 0x12 DVD, 0x14 CD
+if let Ok(mut f) = File::open(ul_cfg_path) {
+    let mut buf = [0u8; 64];
+    while f.read_exact(&mut buf).is_ok() {
+        // El título ocupa los primeros 32 bytes exactos
+        let title = String::from_utf8_lossy(&buf[0..32]).trim_matches('\0').trim().to_string();
+        
+        // CORRECCIÓN: El prefijo ul. real empieza formalmente después del byte de control.
+        // Inspeccionamos de forma segura la estructura "ul.XXXXXXXX" (11 caracteres)
+        let raw_file_base = String::from_utf8_lossy(&buf[33..44]).trim_matches('\0').trim().to_string();
+        
+        let parts = buf[47];
+        let media = buf[48]; // 0x12 DVD, 0x14 CD
 
-            if startup.is_empty() { continue; }
+        if raw_file_base.is_empty() || !raw_file_base.starts_with("ul.") { continue; }
 
-            let mut id = startup.clone();
-            
-            // CORRECCIÓN: Buscamos en el directorio el archivo ".00" real para extraer el Game ID completo que inyectó USBUtil
-            if let Ok(entries) = fs::read_dir(&base) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with(&startup) && name.ends_with(".00") {
-                        if let Some(stripped) = name.strip_prefix(&format!("{}.", startup)) {
-                            if let Some(real_id) = stripped.strip_suffix(".00") {
-                                id = real_id.to_string(); // Extraemos "SCES_517.19"
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
+        // Nos aseguramos de tener el nombre exacto del archivo físico (ej: "ul.A1B2C3D4")
+        let file_base = raw_file_base.clone();
 
-            let has_cover = art_dir.join(format!("{}_COV.png", id)).exists()
-                || art_dir.join(format!("{}_COV.jpg", id)).exists();
+        // Leemos el ID real desde el archivo físico .00
+        let first_part = base.join(format!("{}.00", file_base));
+        let id = if first_part.exists() {
+            // El .00 conserva la estructura de la ISO original, podemos extraer el ID real de PS2 del sector
+            extract_game_id(&first_part).unwrap_or_else(|| file_base.clone())
+        } else {
+            file_base.clone()
+        };
 
-            games.push(Ps2Game {
-                id,
-                title,
-                file_name: format!("ul.cfg ({} parts)", parts),
-                path: base.to_string_lossy().to_string(),
-                size_gb: ((parts as f64) * 1024.0 * 1024.0 * 1024.0) / (1024.0 * 1024.0 * 1024.0), 
-                media_type: if media == 0x12 { "DVD (Split)".to_string() } else { "CD (Split)".to_string() },
-                has_cover,
-            });
-        }
+        let has_cover = art_dir.join(format!("{}_COV.png", id)).exists()
+            || art_dir.join(format!("{}_COV.jpg", id)).exists();
+
+        games.push(Ps2Game {
+            id,
+            title,
+            file_name: format!("{}.00 (.{} parts)", file_base, parts),
+            path: base.to_string_lossy().to_string(),
+            // Cálculo correcto basado en el conteo real de partes de 1GB
+            size_gb: ((parts as f64) * 1024.0 * 1024.0 * 1024.0) / (1024.0 * 1024.0 * 1024.0), 
+            media_type: if media == 0x12 { "DVD (Split)".to_string() } else { "CD (Split)".to_string() },
+            has_cover,
+        });
     }
+}
 
     Ok(games)
 }
@@ -467,7 +474,7 @@ async fn format_usb_drive(
             Ok(final_mount)
         }
 
-#[cfg(target_os = "windows")]
+        #[cfg(target_os = "windows")]
         {
             let drive_letter = if !mount_point.is_empty() {
                 mount_point.trim_end_matches('\\').to_string()
@@ -490,7 +497,6 @@ async fn format_usb_drive(
                 )
             };
 
-            // Escribimos el script tal cual, sin preocuparnos por escapar variables
             let ps_body = format!(
                 "$host.UI.RawUI.WindowTitle = 'Silly PS2 Manager - Preparando USB ({}:)'; \n\
                 Write-Host '==================================================' -ForegroundColor Cyan; \n\
@@ -513,12 +519,10 @@ async fn format_usb_drive(
                 clean_letter, clean_letter, fs_label, format_cmd
             );
 
-            // Guardamos el script en la carpeta temporal de Windows
             let temp_dir = std::env::temp_dir();
             let script_path = temp_dir.join(format!("silly_format_{}.ps1", clean_letter));
             std::fs::write(&script_path, &ps_body).map_err(|e| format!("Error creando script temporal: {}", e))?;
 
-            // Ejecutamos el archivo de forma segura y esperamos a que termine
             let wrapper = format!(
                 "$proc = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '{}'); if ($proc.ExitCode -ne 0) {{ exit 1 }}",
                 script_path.to_string_lossy().replace("'", "''")
@@ -529,7 +533,6 @@ async fn format_usb_drive(
                 .output()
                 .map_err(|e| format!("Error al invocar PowerShell: {}", e))?;
 
-            // Limpiamos el archivo temporal (ignoramos si falla porque es temp)
             let _ = std::fs::remove_file(&script_path);
 
             if !output.status.success() {
@@ -572,28 +575,13 @@ async fn sync_opl_folder(app: AppHandle, source_path: String, target_path: Strin
             }
         }
 
-        let mut existing_split_ids = std::collections::HashSet::new();
+        let mut existing_split_bases = std::collections::HashSet::new();
         let ul_cfg_path = PathBuf::from(&target_path).join("ul.cfg");
         if let Ok(mut f) = File::open(&ul_cfg_path) {
             let mut buf = [0u8; 64];
             while f.read_exact(&mut buf).is_ok() {
-                let startup = String::from_utf8_lossy(&buf[32..46]).trim_matches('\0').trim().to_string();
-                
-                let mut real_id = startup.clone();
-                if let Ok(entries) = fs::read_dir(&target_path) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        if name.starts_with(&startup) && name.ends_with(".00") {
-                            if let Some(stripped) = name.strip_prefix(&format!("{}.", startup)) {
-                                if let Some(rid) = stripped.strip_suffix(".00") {
-                                    real_id = rid.to_string();
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                existing_split_ids.insert(real_id);
+                let file_base = String::from_utf8_lossy(&buf[32..46]).trim_matches('\0').trim().to_string();
+                existing_split_bases.insert(file_base);
             }
         }
 
@@ -617,10 +605,16 @@ async fn sync_opl_folder(app: AppHandle, source_path: String, target_path: Strin
                             
                             if let Some(ext) = path.extension() {
                                 if ext.to_string_lossy().to_lowercase() == "iso" {
-                                    if let Some(id) = extract_game_id(&path) {
-                                        if existing_split_ids.contains(&id) {
-                                            should_copy = false;
-                                        }
+                                    let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                                    let serial_cleanup_re = Regex::new(r"(?i)^(SLES|SLUS|SCES|SCUS|SLPM|SCPS|SLKA)[-_.](\d{3})[-_.](\d{2})[._\s-]*").unwrap();
+                                    let clean_title = serial_cleanup_re.replace(&stem, "").trim().to_string();
+                                    let game_title = if clean_title.is_empty() { stem.clone() } else { clean_title };
+                                    
+                                    let hash = generate_usbutil_hash(&game_title);
+                                    let expected_base = format!("ul.{}", hash);
+
+                                    if existing_split_bases.contains(&expected_base) {
+                                        should_copy = false;
                                     }
                                 }
                             }
@@ -670,32 +664,36 @@ async fn sync_opl_folder(app: AppHandle, source_path: String, target_path: Strin
             let mut last_percent = 200;
 
             if do_split {
-                let game_id = extract_game_id(&src).unwrap_or_else(|| "SLUS_000.00".to_string());
                 let stem = Path::new(&name).file_stem().unwrap_or_default().to_string_lossy().to_string();
                 let serial_cleanup_re = Regex::new(r"(?i)^(SLES|SLUS|SCES|SCUS|SLPM|SCPS|SLKA)[-_.](\d{3})[-_.](\d{2})[._\s-]*").unwrap();
                 let clean_title = serial_cleanup_re.replace(&stem, "").trim().to_string();
                 let title = if clean_title.is_empty() { stem } else { clean_title };
 
-                let mut entry = [0u8; 64];
+                let hash = generate_usbutil_hash(&title);
+                let ul_prefix = format!("ul.{}", hash); // Ej: ul.A1B2C3D4
+
+                let mut entry = [0u8; 64]; // Se inicializa todo en 0x00 (padding)
+                
+                // 1. Título truncado a 32 bytes (el resto de los 32 queda en 0x00)
                 let title_bytes = title.as_bytes();
-                let len = title_bytes.len().min(32);
-                entry[0..len].copy_from_slice(&title_bytes[..len]);
-                let crc = crc32(&entry[0..32]);
+                let title_len = title_bytes.len().min(32);
+                entry[..title_len].copy_from_slice(&title_bytes[..title_len]);
 
-                // CORRECCIÓN VITAL: El campo startup es STRICTAMENTE ul.CRC32 de 11 bytes.
-                let ul_prefix_short = format!("ul.{:08X}", crc);
-                let prefix_bytes = ul_prefix_short.as_bytes();
-                let p_len = prefix_bytes.len().min(14);
-                entry[32..32+p_len].copy_from_slice(&prefix_bytes[..p_len]);
-                entry[48] = 0x12; 
+                // 2. Base de 14 bytes con prefijo exacto (el resto hasta 45 queda en 0x00)
+                let base_bytes = ul_prefix.as_bytes();
+                let base_len = base_bytes.len().min(14);
+                entry[32..32+base_len].copy_from_slice(&base_bytes[..base_len]);
 
-                // Los archivos se nombran con el ID extra para que OPL lo pueda extraer
-                let ul_prefix = format!("ul.{:08X}.{}", crc, game_id);
+                // 3. Opciones de USBUtil
+                entry[46] = 0x20; // Espacio
+                entry[48] = 0x12; // 0x12 para DVD (o 0x14 para CD)
+                // Bytes 49..63 se mantienen en 0x00 como padding de seguridad
                 
                 let mut part_idx = 0;
                 let mut bytes_in_part = 0u64;
-                let part_size_limit = 1024 * 1024 * 1024; 
+                let part_size_limit = 1024 * 1024 * 1024; // 1 GiB
                 
+                // Los archivos divididos se llaman EXACTAMENTE: ul.A1B2C3D4.00, .01, etc.
                 let mut dst_file = File::create(PathBuf::from(&target_path).join(format!("{}.{:02}", ul_prefix, part_idx)))
                     .map_err(|e| format!("Error creando parte {}: {}", part_idx, e))?;
 
@@ -741,7 +739,9 @@ async fn sync_opl_folder(app: AppHandle, source_path: String, target_path: Strin
 
                 let _ = dst_file.sync_all();
 
+                // Byte 47: Total de partes
                 entry[47] = (part_idx + 1) as u8;
+
                 let mut cfg_file = fs::OpenOptions::new().create(true).append(true).open(&ul_cfg_path)
                     .or_else(|_| File::create(&ul_cfg_path))
                     .map_err(|e| format!("Error abriendo/creando ul.cfg: {}", e))?;
